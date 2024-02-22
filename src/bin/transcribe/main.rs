@@ -63,10 +63,11 @@ use burn::record::{DefaultRecorder, Recorder, RecorderError};
 fn load_whisper_model_file<B: Backend>(
     config: &WhisperConfig,
     filename: &str,
+    device: &B::Device
 ) -> Result<Whisper<B>, RecorderError> {
     DefaultRecorder::new()
-        .load(filename.into())
-        .map(|record| config.init().load_record(record))
+        .load(filename.into(), device)
+        .map(|record| config.init(device).load_record(record))
 }
 
 use std::{env, fs, process};
@@ -132,7 +133,7 @@ fn main() {
     };
 
     println!("Loading model...");
-    let whisper: Whisper<Backend> = match load_whisper_model_file(&whisper_config, model_name) {
+    let whisper: Whisper<Backend> = match load_whisper_model_file(&whisper_config, model_name, &device) {
         Ok(whisper_model) => whisper_model,
         Err(e) => {
             eprintln!("Failed to load whisper model file: {}", e);

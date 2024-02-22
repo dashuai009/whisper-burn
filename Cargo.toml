@@ -7,29 +7,22 @@ edition = "2021"
 
 [features]
 default = ["torch-backend"]
-torch-backend = ["burn-tch"]
-wgpu-backend = ["burn-wgpu"]
-
-[dependencies.burn-tch]
-package = "burn-tch"
-git = "https://github.com/burn-rs/burn.git"
-optional = true
-
-[dependencies.burn-wgpu]
-package = "burn-wgpu"
-git = "https://github.com/burn-rs/burn.git"
-optional = true
+torch-backend = ["burn-tch", "burn/tch"]
+wgpu-backend = ["burn-wgpu", "burn/wgpu"]
 
 [dependencies]
-burn = { git = "https://github.com/burn-rs/burn.git" }
-serde = {version = "1.0.171", features = ["std", "derive"]}
+burn = {version = "0.12.1", optional = true}
+burn-tch = {version = "0.12.1", optional = true}
+burn-wgpu = {version = "0.12.1", optional = true}
+
+serde = {version = "1", features = ["std", "derive"]}
 num-traits = "0.2.15"
 hound = "3.5.0"
-tokenizers = {version = "0.13.3", default-features = false, features = [
+tokenizers = {version = "0.15.2", default-features = false, features = [
   "onig",
   "http",
 ]}
 npy = "0.4.0"
-cfg-if = "0.1"
-strum = "0.25.0"
-strum_macros = "0.25.0"
+cfg-if = "1"
+strum = "0.26.1"
+strum_macros = "0.26.1"
