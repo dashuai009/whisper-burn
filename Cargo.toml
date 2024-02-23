@@ -11,6 +11,7 @@ torch-backend = ["burn-tch", "burn/tch"]
 wgpu-backend = ["burn-wgpu", "burn/wgpu"]
 
 [dependencies]
+burn-import = {version = "0.12.1"}
 burn = {version = "0.12.1", optional = true}
 burn-tch = {version = "0.12.1", optional = true}
 burn-wgpu = {version = "0.12.1", optional = true}

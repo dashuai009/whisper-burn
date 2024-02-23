@@ -10,9 +10,9 @@ use strum::IntoEnumIterator;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "wgpu-backend")] {
-        use burn_wgpu::{WgpuBackend, WgpuDevice, AutoGraphicsApi};
+        use burn_wgpu::{Wgpu, WgpuDevice, AutoGraphicsApi};
     } else if #[cfg(feature = "torch-backend")] {
-        use burn_tch::{TchBackend, TchDevice};
+        use burn_tch::{LibTorch, LibTorchDevice};
     }
 }
 
@@ -25,6 +25,7 @@ use burn::{
         Data, Float, Int, Tensor,
     },
 };
+use burn_import::pytorch::PyTorchFileRecorder;
 
 use hound::{self, SampleFormat};
 
@@ -58,15 +59,16 @@ use num_traits::ToPrimitive;
 use whisper::audio::prep_audio;
 use whisper::token::{Gpt2Tokenizer, SpecialToken};
 
-use burn::record::{DefaultRecorder, Recorder, RecorderError};
+use burn::record::{NamedMpkFileRecorder, BinFileRecorder, Recorder, RecorderError, FullPrecisionSettings};
 
 fn load_whisper_model_file<B: Backend>(
     config: &WhisperConfig,
     filename: &str,
     device: &B::Device
 ) -> Result<Whisper<B>, RecorderError> {
-    DefaultRecorder::new()
-        .load(filename.into(), device)
+    let full_filename = format!("{filename}.pt");
+    PyTorchFileRecorder::<FullPrecisionSettings>::new()
+        .load(full_filename.into(), device)
         .map(|record| config.init(device).load_record(record))
 }
 
@@ -75,11 +77,11 @@ use std::{env, fs, process};
 fn main() {
     cfg_if::cfg_if! {
         if #[cfg(feature = "wgpu-backend")] {
-            type Backend = WgpuBackend<AutoGraphicsApi, f32, i32>;
+            type Backend = Wgpu<AutoGraphicsApi, f32, i32>;
             let device = WgpuDevice::BestAvailable;
         } else if #[cfg(feature = "torch-backend")] {
-            type Backend = TchBackend<f32>;
-            let device = TchDevice::Cuda(0);
+            type Backend = LibTorch<f32>;
+            let device = LibTorchDevice::Cuda(0);
         }
     }
 
