@@ -1,6 +1,5 @@
 pub mod load;
 
-use std::f32::NEG_INFINITY;
 
 use burn::{
     config::Config,
@@ -12,6 +11,8 @@ use burn::{
     },
     tensor::{activation::softmax, backend::Backend, module::embedding, Distribution, Int, Tensor},
 };
+use burn::nn::{Embedding, EmbeddingConfig};
+use burn::tensor::Device;
 
 #[derive(Config, Debug)]
 pub struct WhisperConfig {
@@ -20,12 +21,12 @@ pub struct WhisperConfig {
 }
 
 impl WhisperConfig {
-    pub fn init<B: Backend>(&self,device : &B::Device) -> Whisper<B> {
+    pub fn init<B: Backend>(&self, device: &B::Device) -> Whisper<B> {
         let n_audio_state = self.audio_encoder_config.n_audio_state;
         let n_text_state = self.text_decoder_config.n_text_state;
 
-        assert!(
-            n_audio_state == n_text_state,
+        assert_eq!(
+            n_audio_state, n_text_state,
             "Audio encoder state size {} must be equal to text decoder state size {}.",
             n_audio_state,
             n_text_state
@@ -81,16 +82,11 @@ pub struct TextDecoderConfig {
 
 impl TextDecoderConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> TextDecoder<B> {
-        let token_embedding = Tensor::random(
-            [self.n_vocab, self.n_text_state],
-            Distribution::Normal(0.0, 1.0), device
-        )
-        .into();
+        let token_embedding = EmbeddingConfig::new(self.n_vocab, self.n_text_state).init(device);
         let positional_embedding = Tensor::random(
             [self.n_text_ctx, self.n_text_state],
-            Distribution::Normal(0.0, 1.0), device
-        )
-        .into();
+            Distribution::Normal(0.0, 1.0), device,
+        ).into();
         let blocks: Vec<_> = (0..self.n_text_layer)
             .into_iter()
             .map(|_| {
@@ -99,7 +95,11 @@ impl TextDecoderConfig {
             .collect();
         let ln = nn::LayerNormConfig::new(self.n_text_state).init(device);
 
-        let mask = attn_decoder_mask(self.n_text_ctx).into();
+        let mask = Tensor::<B, 2>::full(
+            [self.n_text_ctx, self.n_text_ctx],
+            f32::NEG_INFINITY,
+            device,
+        ).triu(1).into();
 
         let n_vocab = self.n_vocab;
         let n_text_ctx = self.n_text_ctx;
@@ -118,7 +118,7 @@ impl TextDecoderConfig {
 
 #[derive(Module, Debug)]
 pub struct TextDecoder<B: Backend> {
-    token_embedding: Param<Tensor<B, 2>>,
+    token_embedding: Embedding<B>,
     positional_embedding: Param<Tensor<B, 2>>,
     blocks: Vec<ResidualDecoderAttentionBlock<B>>,
     ln: nn::LayerNorm<B>,
@@ -138,12 +138,12 @@ impl<B: Backend> TextDecoder<B> {
             self.n_text_ctx
         );
 
-        let x = embedding(self.token_embedding.val(), x)
+        let x = self.token_embedding.forward(x)
             + self
-                .positional_embedding
-                .val()
-                .slice([0..seq_len])
-                .unsqueeze::<3>();
+            .positional_embedding
+            .val()
+            .slice([0..seq_len])
+            .unsqueeze::<3>();
 
         //let mask = attn_decoder_mask(seq_len);
 
@@ -153,7 +153,7 @@ impl<B: Backend> TextDecoder<B> {
         }
 
         let x = self.ln.forward(x);
-        return x.matmul(self.token_embedding.val().transpose().unsqueeze::<3>());
+        return x.matmul(self.token_embedding.weight.val().transpose().unsqueeze::<3>());
     }
 
     fn ctx_size(&self) -> usize {
@@ -532,12 +532,13 @@ pub fn qkv_attention<B: Backend>(
     return o;
 }
 
-pub fn attn_decoder_mask<B: Backend>(seq_length: usize) -> Tensor<B, 2> {
+#[deprecated]
+pub fn attn_decoder_mask<B: Backend>(seq_length: usize, device: &Device<B>) -> Tensor<B, 2> {
     let device = Default::default();
     let mut mask = Tensor::<B, 2>::zeros([seq_length, seq_length], &device);
 
     for i in 0..(seq_length - 1) {
-        let values = Tensor::<B, 2>::zeros([1, seq_length - (i + 1)], &device).add_scalar(NEG_INFINITY);
+        let values = Tensor::<B, 2>::zeros([1, seq_length - (i + 1)], &device).add_scalar(f32::NEG_INFINITY);
         mask = mask.slice_assign([i..i + 1, i + 1..seq_length], values);
     }
 

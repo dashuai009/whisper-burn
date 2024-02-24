@@ -259,9 +259,11 @@ fn load_audio_encoder<B: Backend>(
 
 fn load_text_decoder<B: Backend>(
     path: &str,
-    device: &B::Device
+    device: &B::Device,
 ) -> Result<(TextDecoder<B>, TextDecoderConfig), Box<dyn Error>> {
-    let token_embedding = load_tensor::<B, 2>("token_embedding/weight", path, device)?;
+    let token_embedding = Embedding::<B> {
+        weight: Param::from(load_tensor::<B, 2>("token_embedding/weight", path, device)?)
+    };
     let positional_embedding = load_tensor::<B, 2>("positional_embedding", path, device)?;
 
     let n_layer = load_usize::<B>("n_layer", path, device)?;
@@ -274,18 +276,18 @@ fn load_text_decoder<B: Backend>(
     let ln = load_layer_norm(&format!("{}/{}", path, "ln"), device)?;
 
     let [n_text_ctx, n_text_state] = positional_embedding.dims();
-    let mask = attn_decoder_mask(n_text_ctx).into();
+    let mask = attn_decoder_mask(n_text_ctx, device).into();
 
-    let [n_vocab, _] = token_embedding.dims();
+    let [n_vocab, _] = token_embedding.weight.dims();
 
     let text_decoder = TextDecoder {
-        token_embedding: token_embedding.into(),
+        token_embedding,
         positional_embedding: positional_embedding.into(),
         blocks: blocks,
         ln: ln,
         mask: mask,
         n_text_ctx: n_text_ctx,
-        n_vocab: n_vocab,
+        n_vocab,
     };
 
     let config = TextDecoderConfig {
