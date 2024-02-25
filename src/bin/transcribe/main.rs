@@ -59,7 +59,7 @@ use num_traits::ToPrimitive;
 use whisper::audio::prep_audio;
 use whisper::token::{Gpt2Tokenizer, SpecialToken};
 
-use burn::record::{NamedMpkFileRecorder, BinFileRecorder, Recorder, RecorderError, FullPrecisionSettings};
+use burn::record::{NamedMpkFileRecorder, BinFileRecorder, Recorder, RecorderError, FullPrecisionSettings, HalfPrecisionSettings};
 
 fn load_whisper_model_file<B: Backend>(
     config: &WhisperConfig,
@@ -67,7 +67,7 @@ fn load_whisper_model_file<B: Backend>(
     device: &B::Device
 ) -> Result<Whisper<B>, RecorderError> {
     let full_filename = format!("{filename}.pt");
-    PyTorchFileRecorder::<FullPrecisionSettings>::new()
+    PyTorchFileRecorder::<HalfPrecisionSettings>::new()
         .load(full_filename.into(), device)
         .map(|record| config.init(device).load_record(record))
 }
