@@ -11,7 +11,7 @@ use burn::{
     },
     tensor::{activation::softmax, backend::Backend, module::embedding, Distribution, Int, Tensor},
 };
-use burn::nn::{Embedding, EmbeddingConfig};
+use burn::nn::{Embedding, EmbeddingConfig, Linear};
 use burn::tensor::Device;
 
 #[derive(Config, Debug)]
@@ -122,7 +122,7 @@ pub struct TextDecoder<B: Backend> {
     positional_embedding: Param<Tensor<B, 2>>,
     blocks: Vec<ResidualDecoderAttentionBlock<B>>,
     ln: nn::LayerNorm<B>,
-    mask: Param<Tensor<B, 2>>,
+    mask: Tensor<B, 2> ,
     n_vocab: usize,
     n_text_ctx: usize,
 }
@@ -149,7 +149,7 @@ impl<B: Backend> TextDecoder<B> {
 
         let mut x = x;
         for block in &self.blocks {
-            x = block.forward(x, xa.clone(), self.mask.val());
+            x = block.forward(x, xa.clone(), &self.mask);
         }
 
         let x = self.ln.forward(x);
@@ -172,15 +172,14 @@ pub struct AudioEncoderConfig {
 
 impl AudioEncoderConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> AudioEncoder<B> {
+        println!("begin init audio encoder");
         let conv1 = Conv1dConfig::new(self.n_mels, self.n_audio_state, 3)
             .with_padding(PaddingConfig1d::Explicit(1))
             .init(device);
-        let gelu1 = nn::GELU::new();
         let conv2 = Conv1dConfig::new(self.n_audio_state, self.n_audio_state, 3)
             .with_padding(PaddingConfig1d::Explicit(1))
             .with_stride(2)
             .init(device);
-        let gelu2 = nn::GELU::new();
         let blocks: Vec<_> = (0..self.n_audio_layer)
             .into_iter()
             .map(|_| {
@@ -199,9 +198,7 @@ impl AudioEncoderConfig {
 
         AudioEncoder {
             conv1,
-            gelu1,
             conv2,
-            gelu2,
             blocks,
             ln_post,
             positional_embedding,
@@ -214,9 +211,7 @@ impl AudioEncoderConfig {
 #[derive(Module, Debug)]
 pub struct AudioEncoder<B: Backend> {
     conv1: Conv1d<B>,
-    gelu1: nn::GELU,
     conv2: Conv1d<B>,
-    gelu2: nn::GELU,
     blocks: Vec<ResidualEncoderAttentionBlock<B>>,
     ln_post: nn::LayerNorm<B>,
     positional_embedding: Param<Tensor<B, 2>>,
@@ -240,8 +235,8 @@ impl<B: Backend> AudioEncoder<B> {
             self.n_audio_ctx
         );
 
-        let x = self.gelu1.forward(self.conv1.forward(x));
-        let x = self.gelu2.forward(self.conv2.forward(x));
+        let x = nn::Gelu::new().forward(self.conv1.forward(x));
+        let x = nn::Gelu::new().forward(self.conv2.forward(x));
 
         let x = x.swap_dims(1, 2);
         let k = x.dims()[1];
@@ -275,13 +270,17 @@ impl ResidualEncoderAttentionBlockConfig {
         let attn = MultiHeadSelfAttentionConfig::new(self.n_state, self.n_head).init(device);
         let attn_ln = nn::LayerNormConfig::new(self.n_state).init(device);
 
-        let mlp = MLPConfig::new(self.n_state).init(device);
+        let mlp0 = nn::LinearConfig::new(self.n_state, 4 * self.n_state).init(device);
+        let gelu = nn::Gelu::new();
+        let mlp2 = nn::LinearConfig::new(4 * self.n_state, self.n_state).init(device);
+
         let mlp_ln = nn::LayerNormConfig::new(self.n_state).init(device);
 
         ResidualEncoderAttentionBlock {
             attn,
             attn_ln,
-            mlp,
+            mlp0,
+            mlp2,
             mlp_ln,
         }
     }
@@ -291,14 +290,22 @@ impl ResidualEncoderAttentionBlockConfig {
 pub struct ResidualEncoderAttentionBlock<B: Backend> {
     attn: MultiHeadSelfAttention<B>,
     attn_ln: nn::LayerNorm<B>,
-    mlp: MLP<B>,
+    mlp0: Linear<B>,
+    mlp2: Linear<B>,
     mlp_ln: nn::LayerNorm<B>,
 }
 
 impl<B: Backend> ResidualEncoderAttentionBlock<B> {
     fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
         let x = x.clone() + self.attn.forward(self.attn_ln.forward(x), None);
-        let x = x.clone() + self.mlp.forward(self.mlp_ln.forward(x));
+
+        let z = self.mlp_ln.forward(x.clone());
+        let z = self.mlp0.forward(z);
+        let gelu=  nn::Gelu::new();
+        let z = gelu.forward(z);
+        let z= self.mlp2.forward(z);
+
+        let x = x.clone() + z;
         return x;
     }
 }
@@ -317,7 +324,10 @@ impl ResidualDecoderAttentionBlockConfig {
         let cross_attn = MultiHeadCrossAttentionConfig::new(self.n_state, self.n_head).init(device);
         let cross_attn_ln = nn::LayerNormConfig::new(self.n_state).init(device);
 
-        let mlp = MLPConfig::new(self.n_state).init(device);
+        let mlp0 = nn::LinearConfig::new(self.n_state, 4 * self.n_state).init(device);
+        let gelu = nn::Gelu::new();
+        let mlp2 = nn::LinearConfig::new(4 * self.n_state, self.n_state).init(device);
+
         let mlp_ln = nn::LayerNormConfig::new(self.n_state).init(device);
 
         ResidualDecoderAttentionBlock {
@@ -325,7 +335,8 @@ impl ResidualDecoderAttentionBlockConfig {
             attn_ln,
             cross_attn,
             cross_attn_ln,
-            mlp,
+            mlp0,
+            mlp2,
             mlp_ln,
         }
     }
@@ -337,50 +348,69 @@ pub struct ResidualDecoderAttentionBlock<B: Backend> {
     attn_ln: nn::LayerNorm<B>,
     cross_attn: MultiHeadCrossAttention<B>,
     cross_attn_ln: nn::LayerNorm<B>,
-    mlp: MLP<B>,
+    mlp0: Linear<B>,
+    mlp2: Linear<B>,
     mlp_ln: nn::LayerNorm<B>,
 }
 
 impl<B: Backend> ResidualDecoderAttentionBlock<B> {
-    fn forward(&self, x: Tensor<B, 3>, xa: Tensor<B, 3>, mask: Tensor<B, 2>) -> Tensor<B, 3> {
+    fn forward(&self, x: Tensor<B, 3>, xa: Tensor<B, 3>, mask: &Tensor<B, 2>) -> Tensor<B, 3> {
         let x = x.clone() + self.attn.forward(self.attn_ln.forward(x), Some(mask));
         let x = x.clone() + self.cross_attn.forward(self.cross_attn_ln.forward(x), xa);
-        let x = x.clone() + self.mlp.forward(self.mlp_ln.forward(x));
+
+        let z = self.mlp_ln.forward(x.clone());
+        let z = self.mlp0.forward(z);
+        let gelu=  nn::Gelu::new();
+        let z = gelu.forward(z);
+        let z= self.mlp2.forward(z);
+
+        let x = x.clone() + z;
         return x;
     }
 }
 
-#[derive(Config)]
-pub struct MLPConfig {
-    n_state: usize,
-}
+// todo: waiting burn to support nn::sequential
+// #[derive(Module, Debug)]
+// enum MLPSequentialType<B: Backend> {
+//     Lin(nn::Linear<B>),
+//     Gelu(nn::Gelu)
+// }
+// Gelu
+// #[derive(Module)]
+// struct MLP{
+//     mlp0:
+// }
 
-impl MLPConfig {
-    pub fn init<B: Backend>(&self, device: &B::Device) -> MLP<B> {
-        let lin1 = nn::LinearConfig::new(self.n_state, 4 * self.n_state).init(device);
-        let gelu = nn::GELU::new();
-        let lin2 = nn::LinearConfig::new(4 * self.n_state, self.n_state).init(device);
-
-        MLP { lin1, gelu, lin2 }
-    }
-}
+// #[derive(Config)]
+// pub struct MLPConfig {
+//     n_state: usize,
+// }
+//
+// impl MLPConfig {
+//     pub fn init<B: Backend>(&self, device: &B::Device) -> MLP<B> {
+//         let lin1 = nn::LinearConfig::new(self.n_state, 4 * self.n_state).init(device);
+//         let lin2 = nn::LinearConfig::new(4 * self.n_state, self.n_state).init(device);
+//
+//         MLP { lin1,  lin2 }
+//     }
+// }
 
 #[derive(Module, Debug)]
 pub struct MLP<B: Backend> {
     lin1: nn::Linear<B>,
-    gelu: nn::GELU,
+    gelu: nn::Gelu,
     lin2: nn::Linear<B>,
 }
 
-impl<B: Backend> MLP<B> {
-    pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
-        let x = self.lin1.forward(x);
-        let x = self.gelu.forward(x);
-        let x = self.lin2.forward(x);
-
-        return x;
-    }
-}
+// impl<B: Backend> MLP<B> {
+//     pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
+//         let x = self.lin1.forward(x);
+//         let x = nn::Gelu::new().forward(x);
+//         let x = self.lin2.forward(x);
+//
+//         return x;
+//     }
+// }
 
 #[derive(Config)]
 pub struct MultiHeadSelfAttentionConfig {
@@ -425,7 +455,7 @@ pub struct MultiHeadSelfAttention<B: Backend> {
 }
 
 impl<B: Backend> MultiHeadSelfAttention<B> {
-    pub fn forward(&self, x: Tensor<B, 3>, mask: Option<Tensor<B, 2>>) -> Tensor<B, 3> {
+    pub fn forward(&self, x: Tensor<B, 3>, mask: Option<&Tensor<B, 2>>) -> Tensor<B, 3> {
         let q = self.query.forward(x.clone());
         let k = self.key.forward(x.clone());
         let v = self.value.forward(x);
@@ -494,7 +524,7 @@ pub fn qkv_attention<B: Backend>(
     q: Tensor<B, 3>,
     k: Tensor<B, 3>,
     v: Tensor<B, 3>,
-    mask: Option<Tensor<B, 2>>,
+    mask: Option<&Tensor<B, 2>>,
     n_head: usize,
 ) -> Tensor<B, 3> {
     let [n_batch, n_qctx, n_state] = q.dims();
@@ -520,7 +550,7 @@ pub fn qkv_attention<B: Backend>(
 
     // apply mask
     let qk = if let Some(mask) = mask {
-        qk + mask.slice([0..n_qctx, 0..n_ctx]).unsqueeze::<4>()
+        qk + mask.clone().slice([0..n_qctx, 0..n_ctx]).unsqueeze::<4>()
     } else {
         qk
     };

@@ -1,12 +1,17 @@
-use std::collections::HashMap;
-use std::iter;
+mod lib;
 
-use whisper::helper::*;
-use whisper::model::*;
-use whisper::{token, token::Language};
 use whisper::transcribe::waveform_to_text;
+use whisper::model::*;
 
 use strum::IntoEnumIterator;
+
+use whisper::token::{Gpt2Tokenizer, Language};
+
+use burn::record::{HalfPrecisionSettings, Recorder, RecorderError};
+
+use ffmpeg::{frame, media};
+use ffmpeg_next as ffmpeg;
+use std::{clone, slice};
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "wgpu-backend")] {
@@ -16,27 +21,84 @@ cfg_if::cfg_if! {
     }
 }
 
-use burn::{
-    config::Config,
-    module::Module,
-    tensor::{
-        self,
-        backend::{self, Backend},
-        Data, Float, Int, Tensor,
-    },
-};
-use burn_import::pytorch::PyTorchFileRecorder;
+use burn::{config::Config, module::Module, tensor::backend::Backend};
+use burn_import::pytorch::{LoadArgs, PyTorchFileRecorder};
 
 use hound::{self, SampleFormat};
 
-fn load_audio_waveform<B: Backend>(filename: &str) -> hound::Result<(Vec<f32>, usize)> {
-    let mut reader = hound::WavReader::open(filename)?;
+fn load_audio_waveform_with_ffmpeg(input_file: &str) -> Result<Vec<f32>, ffmpeg::Error> {
+    ffmpeg::init().unwrap();
+
+    let mut ictx = ffmpeg::format::input(&input_file).unwrap();
+    let input_audio_stream = ictx
+        .streams()
+        .best(media::Type::Audio)
+        .expect("could not find best audio stream");
+    let audio_stream_index = input_audio_stream.index();
+    // unsafe {
+    //     println!(
+    //         "input stream = {:?} par = {:?}",
+    //         input,
+    //         *input.parameters().as_ptr()
+    //     );
+    // }
+    let context =
+        ffmpeg::codec::context::Context::from_parameters(input_audio_stream.parameters())?;
+    unsafe {
+        //  Guessed Channel Layout: mono
+        let par = input_audio_stream.parameters().as_mut_ptr();
+        if (*par).channel_layout == 0 {
+            (*par).channel_layout = ffmpeg::util::channel_layout::ChannelLayout::MONO.bits()
+        };
+    }
+
+    let mut decoder = context.decoder().audio()?;
+    decoder.set_parameters(input_audio_stream.parameters())?;
+
+    let src_format = decoder.format();
+    let src_rate = decoder.rate();
+    let src_channel_layout = decoder.channel_layout();
+
+    let dst_rate = 16000u32;
+    let mut swr = ffmpeg::software::resampling::Context::get(
+        src_format,
+        src_channel_layout,
+        src_rate,
+        ffmpeg::util::format::Sample::F32(ffmpeg::util::format::sample::Type::Packed), // AV_SAMPLE_FMT_FLT
+        ffmpeg::util::channel_layout::ChannelLayout::MONO,
+        dst_rate,
+    )?;
+
+    let mut frame = frame::Audio::empty();
+    let mut res = vec![];
+    for (stream, packet) in ictx.packets() {
+        if stream.index() != audio_stream_index {
+            continue;
+        }
+        decoder.send_packet(&packet)?;
+        while decoder.receive_frame(&mut frame).is_ok() {
+            let mut out_frame = frame::Audio::empty();
+            let _resample_res = swr.run(&frame, &mut out_frame)?;
+            unsafe {
+                let out_frame = out_frame.as_mut_ptr();
+                let tmp_slice = slice::from_raw_parts(
+                    (*(*out_frame).extended_data) as *mut f32,
+                    (*out_frame).nb_samples as usize,
+                ); // the dst_format in swr is AV_SAMPLE_FMT_FLT, f32
+                res.extend_from_slice(tmp_slice);
+            }
+        }
+    }
+    Ok(res)
+}
+fn load_audio_waveform(filename: &str) -> hound::Result<(Vec<f32>, usize)> {
+    let reader = hound::WavReader::open(filename)?;
     let spec = reader.spec();
 
-    let duration = reader.duration() as usize;
+    let _duration = reader.duration() as usize;
     let channels = spec.channels as usize;
     let sample_rate = spec.sample_rate as usize;
-    let bits_per_sample = spec.bits_per_sample;
+    let _bits_per_sample = spec.bits_per_sample;
     let sample_format = spec.sample_format;
 
     assert_eq!(sample_rate, 16000, "The audio sample rate must be 16k.");
@@ -55,20 +117,16 @@ fn load_audio_waveform<B: Backend>(filename: &str) -> hound::Result<(Vec<f32>, u
     return Ok((floats, sample_rate));
 }
 
-use num_traits::ToPrimitive;
-use whisper::audio::prep_audio;
-use whisper::token::{Gpt2Tokenizer, SpecialToken};
-
-use burn::record::{NamedMpkFileRecorder, BinFileRecorder, Recorder, RecorderError, FullPrecisionSettings, HalfPrecisionSettings};
-
 fn load_whisper_model_file<B: Backend>(
     config: &WhisperConfig,
     filename: &str,
-    device: &B::Device
+    device: &B::Device,
 ) -> Result<Whisper<B>, RecorderError> {
     let full_filename = format!("{filename}.pt");
+    let mut load_args = LoadArgs::new(full_filename.parse().unwrap());
+    load_args.debug = false;
     PyTorchFileRecorder::<HalfPrecisionSettings>::new()
-        .load(full_filename.into(), device)
+        .load(load_args, device)
         .map(|record| config.init(device).load_record(record))
 }
 
@@ -77,10 +135,10 @@ use std::{env, fs, process};
 fn main() {
     cfg_if::cfg_if! {
         if #[cfg(feature = "wgpu-backend")] {
-            type Backend = Wgpu<AutoGraphicsApi, f32, i32>;
+            type CurBackend = Wgpu<AutoGraphicsApi, f32, i32>;
             let device = WgpuDevice::BestAvailable;
         } else if #[cfg(feature = "torch-backend")] {
-            type Backend = LibTorch<f32>;
+            type CurBackend = LibTorch<f32>;
             let device = LibTorchDevice::Cuda(0);
         }
     }
@@ -100,7 +158,7 @@ fn main() {
 
     let lang_str = &args[3];
     let lang = match Language::iter().find(|lang| lang.as_str() == lang_str) {
-        Some(lang) => lang, 
+        Some(lang) => lang,
         None => {
             eprintln!("Invalid language abbreviation: {}", lang_str);
             process::exit(1);
@@ -109,14 +167,18 @@ fn main() {
 
     let model_name = &args[1];
 
+    let x = load_audio_waveform(wav_file).unwrap();
+    println!("x = {}", x.0.len());
+
     println!("Loading waveform...");
-    let (waveform, sample_rate) = match load_audio_waveform::<Backend>(wav_file) {
-        Ok((w, sr)) => (w, sr),
+    let waveform = match load_audio_waveform_with_ffmpeg(wav_file) {
+        Ok(w) => w,
         Err(e) => {
             eprintln!("Failed to load audio file: {}", e);
             process::exit(1);
         }
     };
+    println!(" y = {}", waveform.len());
 
     let bpe = match Gpt2Tokenizer::new() {
         Ok(bpe) => bpe,
@@ -135,7 +197,8 @@ fn main() {
     };
 
     println!("Loading model...");
-    let whisper: Whisper<Backend> = match load_whisper_model_file(&whisper_config, model_name, &device) {
+    let whisper = match load_whisper_model_file::<CurBackend>(&whisper_config, model_name, &device)
+    {
         Ok(whisper_model) => whisper_model,
         Err(e) => {
             eprintln!("Failed to load whisper model file: {}", e);
@@ -145,7 +208,28 @@ fn main() {
 
     let whisper = whisper.to_device(&device);
 
-    let (text, tokens) = match waveform_to_text(&whisper, &bpe, lang, waveform, sample_rate) {
+    let temperature = vec![];
+    let compression_ratio_threshold = Some(2.4_f32);
+    let logprob_threshold = Some(-1.0_f32);
+    let no_speech_threshold = Some(0.6_f32);
+    let clip_timestamps = vec![(0.0f32, 3.0f32)];
+    let mut decode_options = whisper::decoding::DecodingOptions::default();
+
+    let r = lib::transcribe(
+        &whisper,
+        &bpe,
+        lang,
+        waveform.clone(),
+        temperature,
+        compression_ratio_threshold,
+        logprob_threshold,
+        no_speech_threshold,
+        clip_timestamps,
+        &decode_options,
+        &device,
+    );
+    return;
+    let (text, _tokens) = match waveform_to_text(&whisper, &bpe, lang, waveform, 16000) {
         Ok((text, tokens)) => (text, tokens),
         Err(e) => {
             eprintln!("Error during transcription: {}", e);

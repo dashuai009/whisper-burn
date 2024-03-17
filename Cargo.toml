@@ -2,28 +2,43 @@
 name = "whisper"
 version = "0.1.0"
 edition = "2021"
-
+build = "build.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["torch-backend"]
+default = ["wgpu-backend"]
 torch-backend = ["burn-tch", "burn/tch"]
 wgpu-backend = ["burn-wgpu", "burn/wgpu"]
 
 [dependencies]
-burn-import = {version = "0.12.1"}
-burn = {version = "0.12.1", optional = true}
-burn-tch = {version = "0.12.1", optional = true}
-burn-wgpu = {version = "0.12.1", optional = true}
+burn-import = { path = "burn/crates/burn-import", version = "0.13.0" }
+burn = { path = "burn/crates/burn", version = "0.13.0", optional = true }
+burn-tch = { path = "burn/crates/burn-tch", version = "0.13.0", optional = true }
+burn-wgpu = { path = "burn/crates/burn-wgpu", version = "0.13.0", optional = true }
 
-serde = {version = "1", features = ["std", "derive"]}
+serde = { version = "1", features = ["std", "derive"] }
 num-traits = "0.2.15"
-hound = "3.5.0"
-tokenizers = {version = "0.15.2", default-features = false, features = [
-  "onig",
-  "http",
-]}
+hound = "3.5.1"
+tokenizers = { version = "0.15.2", default-features = false, features = [
+    "onig",
+    "http",
+] }
 npy = "0.4.0"
 cfg-if = "1"
 strum = "0.26.1"
 strum_macros = "0.26.1"
+zip = "0.6.6"
+
+ffmpeg-next = { version = "6.1.1", features = [
+    "build",
+    # "build-lib-snappy",
+    "build-lib-dav1d",
+    # "build-lib-opencore-amrwb",
+    "build-license-gpl", "build-license-nonfree", "build-license-version3",
+    "build-lib-x264",
+    "build-lib-x265",
+    "build-lib-vpx"
+] }
+
+[build-dependencies]
+pkg-config = "0.3"

@@ -1,11 +1,22 @@
-use burn::tensor::{activation::relu, backend::Backend, Tensor, ElementConversion};
+use burn::tensor::{activation::relu, backend::Backend, ElementConversion, Tensor};
 
 use crate::helper::*;
 
-const N_FFT: usize = 400;
-const HOP_LENGTH: usize = 160;
-const N_MELS: usize = 80;
-const WINDOW_LENGTH: usize = N_FFT;
+pub const N_FFT: usize = 400;
+pub const HOP_LENGTH: usize = 160;
+pub const N_MELS: usize = 80;
+pub const WINDOW_LENGTH: usize = N_FFT;
+pub const CHUNK_LENGTH: usize = 30;
+pub const SAMPLE_RATE: usize = 16000;
+pub const N_SAMPLES: usize = CHUNK_LENGTH * SAMPLE_RATE;
+//  # 480000 samples in a 30-second chunk
+pub const N_FRAMES: usize = N_SAMPLES / HOP_LENGTH;
+// 3000 frames in a mel spectrogram input
+pub const N_SAMPLES_PER_TOKEN: usize = HOP_LENGTH * 2;
+//   # the initial convolutions has stride 2
+pub const FRAMES_PER_SECOND: usize = SAMPLE_RATE / HOP_LENGTH;
+//  # 10ms per audio frame
+pub const TOKENS_PER_SECOND: usize = SAMPLE_RATE / N_SAMPLES_PER_TOKEN; //  # 20ms per audio token
 
 /// Returns the maximum number of waveform samples that can be submitted to `prep_audio`
 /// without receiving more than `n_frame_max` frames.
@@ -31,21 +42,21 @@ fn is_odd(x: usize) -> bool {
 /// n_samples_padded = if n_fft is even: n_samples + n_fft else: n_samples + n_fft - 1,
 /// n_fft = 400,
 /// hop_length = 160.
-pub fn prep_audio<B: Backend>(waveform: Tensor<B, 2>, sample_rate: f64) -> Tensor<B, 3> {
-    let device = waveform.device();
+pub fn log_mel_spectrogram<B: Backend>(audio: Tensor<B, 2>) -> Tensor<B, 3> {
+    let device = audio.device();
 
     let window = hann_window_device(WINDOW_LENGTH, &device);
-    let (stft_real, stft_imag) = stfft(waveform, N_FFT, HOP_LENGTH, window);
+    let (stft_real, stft_imag) = stfft(audio, N_FFT, HOP_LENGTH, window);
 
     let magnitudes = stft_real.powf_scalar(2.0) + stft_imag.powf_scalar(2.0);
     let [n_batch, n_row, n_col] = magnitudes.dims();
     let magnitudes = magnitudes.slice([0..n_batch, 0..n_row, 0..(n_col - 1)]);
 
-    let mel_spec = get_mel_filters_device(sample_rate, N_FFT, N_MELS, false, &device)
+    let mel_spec = get_mel_filters_device(SAMPLE_RATE as f64, N_FFT, N_MELS, false, &device)
         .unsqueeze()
         .matmul(magnitudes);
 
-    let log_spec = tensor_log10(tensor_max_scalar(mel_spec, 1.0e-10));
+    let log_spec = mel_spec.clamp(1.0e-10, f32::MAX).log() / (10.0f64).ln();
 
     let max: f64 = log_spec.clone().max().into_scalar().elem();
 
@@ -64,6 +75,8 @@ fn get_mel_filters<B: Backend>(
     get_mel_filters_device(sample_rate, n_fft, n_mels, htk, &B::Device::default())
 }
 
+/// mel_80=librosa.filters.mel(sr=16000, n_fft=400, n_mels=80),
+/// https://librosa.org/doc/main/_modules/librosa/filters.html#mel
 fn get_mel_filters_device<B: Backend>(
     sample_rate: f64,
     n_fft: usize,
@@ -106,10 +119,10 @@ fn get_mel_filters_device<B: Backend>(
     // lower and upper slopes for all bins
     let lower = -ramps.clone().slice([0..n_mels])
         / fdiff
-            .clone()
-            .slice([0..n_mels])
-            .unsqueeze::<2>()
-            .transpose();
+        .clone()
+        .slice([0..n_mels])
+        .unsqueeze::<2>()
+        .transpose();
     let upper = ramps.slice([2..(2 + n_mels)])
         / fdiff.slice([1..(1 + n_mels)]).unsqueeze::<2>().transpose();
 
@@ -142,37 +155,15 @@ fn get_mel_filters_device<B: Backend>(
     return weights;
 }
 
-fn fft_frequencies<B: Backend>(sample_rate: f64, n_fft: usize) -> Tensor<B, 1> {
-    fft_frequencies_device(sample_rate, n_fft, &B::Device::default())
-}
-
 fn fft_frequencies_device<B: Backend>(
     sample_rate: f64,
     n_fft: usize,
     device: &B::Device,
 ) -> Tensor<B, 1> {
     //return np.fft.rfftfreq(n=n_fft, d=1.0 / sr)
-    Tensor::arange(0..(n_fft / 2 + 1), device).float()
+    Tensor::arange(0..((n_fft as i64) / 2 + 1), device)
+        .float()
         .mul_scalar(sample_rate / n_fft as f64)
-}
-
-fn test_fft_frequencies<B: Backend>() {
-    let sr = 1000.0; // stating sample rate
-    let n_fft = 100; // stating the window size of fft
-    let fftfreqs = fft_frequencies::<B>(sr, n_fft);
-    println!("{:?}", fftfreqs);
-}
-
-fn test_mel_frequencies<B: Backend>(htk: bool) {
-    let n_mels = 128; // stating the number of Mel bands
-    let fmin = 0.0; // stating the lowest frequency
-    let fmax = 22050.0; // stating the highest frequency
-    let melfreqs = mel_frequencies::<B>(n_mels + 2, fmin, fmax, htk);
-    println!("{:?}", melfreqs);
-}
-
-fn mel_frequencies<B: Backend>(n_mels: usize, fmin: f64, fmax: f64, htk: bool) -> Tensor<B, 1> {
-    mel_frequencies_device(n_mels, fmin, fmax, htk, &B::Device::default())
 }
 
 fn mel_frequencies_device<B: Backend>(
@@ -187,7 +178,8 @@ fn mel_frequencies_device<B: Backend>(
     let max_mel = hz_to_mel(fmax, htk);
 
     //mels = np.linspace(min_mel, max_mel, n_mels)
-    let mels = Tensor::arange(0..n_mels, device).float()
+    let mels = Tensor::arange(0..(n_mels as i64), device)
+        .float()
         .mul_scalar((max_mel - min_mel) / (n_mels - 1) as f64)
         .add_scalar(min_mel);
 
@@ -265,12 +257,8 @@ fn mel_to_hz_tensor<B: Backend>(mel: Tensor<B, 1>, htk: bool) -> Tensor<B, 1> {
     return freq;
 }
 
-pub fn hann_window<B: Backend>(window_length: usize) -> Tensor<B, 1> {
-    hann_window_device(window_length, &B::Device::default())
-}
-
 pub fn hann_window_device<B: Backend>(window_length: usize, device: &B::Device) -> Tensor<B, 1> {
-    Tensor::arange(0..window_length, device)
+    Tensor::arange(0..(window_length as i64), device)
         .float()
         .mul_scalar(std::f64::consts::PI / window_length as f64)
         .sin()
@@ -347,13 +335,15 @@ pub fn stfft<B: Backend>(
 
     // construct matrix of wave angles
     let coe = std::f64::consts::PI * 2.0 / n_fft as f64;
-    let b = Tensor::arange(0..n_freq, &device)
+    let b = Tensor::arange(0..(n_freq as i64), &device)
         .float()
         .mul_scalar(coe)
         .unsqueeze::<2>()
         .transpose()
         .repeat(1, n_fft)
-        * Tensor::arange(0..n_fft, &device).float().unsqueeze::<2>();
+        * Tensor::arange(0..(n_fft as i64), &device)
+        .float()
+        .unsqueeze::<2>();
 
     // convolve the input slices with the window and waves
     let real_part = (b.clone().cos() * window.clone().unsqueeze())
@@ -368,4 +358,101 @@ pub fn stfft<B: Backend>(
 
 fn div_roundup(a: usize, b: usize) -> usize {
     (a + b - 1) / b
+}
+
+pub fn pad_or_trim<const D: usize, B: Backend>(
+    input_tensor: &Tensor<B, D>,
+    length: usize,
+) -> Tensor<B, D> {
+    let device = input_tensor.device();
+    let dims = input_tensor.dims();
+    if dims[D - 1] > length {
+        let mut new_dims = dims.clone();
+        new_dims[D - 1] = length;
+        let mut ranges = vec![];
+        for d in new_dims {
+            ranges.push(0..d)
+        }
+        input_tensor.clone().slice::<D>(ranges.try_into().unwrap())
+    } else if dims[D - 1] == length {
+        input_tensor.clone()
+    } else {
+        let mut padding_dims = dims.clone();
+        padding_dims[D - 1] = length - padding_dims[D - 1];
+        let padding = Tensor::<B, D>::zeros(padding_dims, &device);
+        Tensor::<B, D>::cat(vec![input_tensor.clone(), padding], D - 1)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use burn::tensor::backend::Backend;
+    use burn::tensor::Tensor;
+
+    use crate::audio::{mel_frequencies_device, pad_or_trim};
+
+    // #[test]
+    // fn test_fft_frequencies() {
+    //     // let sr = 1000.0; // stating sample rate
+    //     // let n_fft = 100; // stating the window size of fft
+    //     // let fftfreqs = fft_frequencies::<B>(sr, n_fft);
+    //     // println!("{:?}", fftfreqs);
+    // }
+    //
+    // fn test_mel_frequencies<B: Backend>(htk: bool) {
+    //     // let n_mels = 128; // stating the number of Mel bands
+    //     // let fmin = 0.0; // stating the lowest frequency
+    //     // let fmax = 22050.0; // stating the highest frequency
+    //     // let melfreqs = mel_frequencies::<B>(n_mels + 2, fmin, fmax, htk);
+    //     // println!("{:?}", melfreqs);
+    // }
+
+    #[test]
+    fn test_pad_or_trim() {
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "wgpu-backend")] {
+                type CurBackend = burn_wgpu::Wgpu<burn_wgpu::AutoGraphicsApi, f32, i32>;
+                let device = burn_wgpu::WgpuDevice::BestAvailable;
+            } else if #[cfg(feature = "torch-backend")] {
+                type CurBackend = LibTorch<f32>;
+                let device = LibTorchDevice::Cuda(0);
+            }
+        }
+
+
+        let input = Tensor::<CurBackend, 1>::from_data(
+            [1.0, 2.0, 3.0],
+            &device,
+        );
+        let output = pad_or_trim(&input, 5);
+        let expected =
+            Tensor::<CurBackend, 1>::from_data(
+                [1.0, 2.0, 3.0, 0.0, 0.0],
+                &device,
+            );
+        output.to_data().assert_approx_eq(
+            &expected.to_data(), 7,
+        );
+
+
+        let input1 = Tensor::<CurBackend, 2>::from_data(
+            [
+                [1.0, 2.0, 3.0, 4.0],
+                [1.0, 2.0, 3.0, 4.0]
+            ],
+            &device,
+        );
+        let output1 = pad_or_trim(&input1, 3);
+        let expected1 =
+            Tensor::<CurBackend, 2>::from_data(
+                [
+                    [1.0, 2.0, 3.0],
+                    [1.0, 2.0, 3.0],
+                ],
+                &device,
+            );
+        output1.to_data().assert_approx_eq(
+            &expected1.to_data(), 7,
+        );
+    }
 }

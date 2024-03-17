@@ -29,7 +29,7 @@ fn numpy_to_tensor<B: Backend, const D: usize>(numpy_data: NpyData<f32>, device:
 fn load_tensor<B: Backend, const D: usize>(
     name: &str,
     path: &str,
-    device: &B::Device
+    device: &B::Device,
 ) -> Result<Tensor<B, D>, Box<dyn Error>> {
     let tensor_path = format!("{}/{}.npy", path, name);
 
@@ -86,7 +86,7 @@ fn load_layer_norm<B: Backend>(path: &str, device: &B::Device) -> Result<nn::Lay
 
 fn load_multihead_self_attention<B: Backend>(
     path: &str,
-    device: &B::Device
+    device: &B::Device,
 ) -> Result<MultiHeadSelfAttention<B>, Box<dyn Error>> {
     let query = load_linear(&format!("{}/{}", path, "query"), device)?;
     let key = load_linear(&format!("{}/{}", path, "key"), device)?;
@@ -109,7 +109,7 @@ fn load_multihead_self_attention<B: Backend>(
 
 fn load_multihead_cross_attention<B: Backend>(
     path: &str,
-    device: &B::Device
+    device: &B::Device,
 ) -> Result<MultiHeadCrossAttention<B>, Box<dyn Error>> {
     let query = load_linear(&format!("{}/{}", path, "query"), device)?;
     let key = load_linear(&format!("{}/{}", path, "key"), device)?;
@@ -134,7 +134,7 @@ fn load_mlp<B: Backend>(path: &str, device: &B::Device) -> Result<MLP<B>, Box<dy
     let lin1 = load_linear(&format!("{}/{}", path, "mlp1"), device)?;
     let lin2 = load_linear(&format!("{}/{}", path, "mlp2"), device)?;
 
-    let gelu = nn::GELU::new();
+    let gelu = nn::Gelu::new();
 
     let mlp = MLP {
         lin1: lin1,
@@ -165,7 +165,7 @@ fn load_conv1d<B: Backend>(path: &str, config: Conv1dConfig, device: &B::Device)
 
 fn load_residual_encoder_attention_block<B: Backend>(
     path: &str,
-    device: &B::Device
+    device: &B::Device,
 ) -> Result<ResidualEncoderAttentionBlock<B>, Box<dyn Error>> {
     let attn = load_multihead_self_attention(&format!("{}/{}", path, "attn"), device)?;
     let attn_ln = load_layer_norm(&format!("{}/{}", path, "attn_ln"), device)?;
@@ -175,7 +175,8 @@ fn load_residual_encoder_attention_block<B: Backend>(
     let residual_block = ResidualEncoderAttentionBlock {
         attn: attn,
         attn_ln: attn_ln,
-        mlp: mlp,
+        mlp0: mlp.lin1,
+        mlp2: mlp.lin2,
         mlp_ln: mlp_ln,
     };
 
@@ -184,7 +185,7 @@ fn load_residual_encoder_attention_block<B: Backend>(
 
 fn load_residual_decoder_attention_block<B: Backend>(
     path: &str,
-    device: &B::Device
+    device: &B::Device,
 ) -> Result<ResidualDecoderAttentionBlock<B>, Box<dyn Error>> {
     let attn = load_multihead_self_attention(&format!("{}/{}", path, "attn"), device)?;
     let attn_ln = load_layer_norm(&format!("{}/{}", path, "attn_ln"), device)?;
@@ -198,7 +199,8 @@ fn load_residual_decoder_attention_block<B: Backend>(
         attn_ln: attn_ln,
         cross_attn: cross_attn,
         cross_attn_ln: cross_attn_ln,
-        mlp: mlp,
+        mlp0: mlp.lin1,
+        mlp2: mlp.lin2,
         mlp_ln: mlp_ln,
     };
 
@@ -207,7 +209,7 @@ fn load_residual_decoder_attention_block<B: Backend>(
 
 fn load_audio_encoder<B: Backend>(
     path: &str,
-    device: &B::Device
+    device: &B::Device,
 ) -> Result<(AudioEncoder<B>, AudioEncoderConfig), Box<dyn Error>> {
     let n_mels = load_usize::<B>("n_mels", path, device)?;
     let n_audio_state = load_usize::<B>("n_audio_state", path, device)?;
@@ -236,9 +238,9 @@ fn load_audio_encoder<B: Backend>(
 
     let audio_encoder = AudioEncoder {
         conv1: conv1,
-        gelu1: nn::GELU::new(),
+        // gelu1: nn::GELU::new(),
         conv2: conv2,
-        gelu2: nn::GELU::new(),
+        // gelu2: nn::GELU::new(),
         blocks: blocks,
         ln_post: ln_post,
         positional_embedding: positional_embedding.into(),
