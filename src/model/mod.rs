@@ -228,12 +228,12 @@ impl<B: Backend> AudioEncoder<B> {
             "Audio mel spectrum size must be {}.",
             self.n_mels
         );
-        assert!(
-            n_ctx <= self.n_audio_ctx,
-            "Audio length {} cannot exceed {}.",
-            n_ctx,
-            self.n_audio_ctx
-        );
+        // assert!(
+        //     n_ctx <= self.n_audio_ctx,
+        //     "Audio length {} cannot exceed {}.",
+        //     n_ctx,
+        //     self.n_audio_ctx
+        // );
 
         let x = nn::Gelu::new().forward(self.conv1.forward(x));
         let x = nn::Gelu::new().forward(self.conv2.forward(x));

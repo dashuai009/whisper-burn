@@ -1,15 +1,15 @@
 use std::{collections::HashMap, marker::PhantomData};
 
-use burn::tensor::{backend::Backend, Bool, Data, Device, Int, Tensor};
 use burn::tensor::activation::softmax;
+use burn::tensor::{backend::Backend,  Device, Int, Tensor};
 use num_traits::{clamp, Zero};
+use whisper::audio::pad_or_trim;
+use whisper::token::{Gpt2Tokenizer, Language, SpecialToken};
 use whisper::{
     audio::{log_mel_spectrogram, FRAMES_PER_SECOND, HOP_LENGTH, N_FRAMES, N_SAMPLES, SAMPLE_RATE},
     decoding::DecodingOptions,
     model::Whisper,
 };
-use whisper::token::{Gpt2Tokenizer, Language, SpecialToken};
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WhichModel {
@@ -181,7 +181,6 @@ impl<B: Backend> DecodingTask<B> {
     }
 }
 
-
 // Tokenizer dependent bits.
 pub const SOT_TOKEN: &str = "<|startoftranscript|>";
 pub const TRANSCRIBE_TOKEN: &str = "<|transcribe|>";
@@ -190,15 +189,17 @@ pub const NO_TIMESTAMPS_TOKEN: &str = "<|notimestamps|>";
 pub const EOT_TOKEN: &str = "<|endoftext|>";
 pub const NO_SPEECH_TOKENS: [&str; 2] = ["<|nocaptions|>", "<|nospeech|>"];
 
-
 /// Returns the token id for the selected language.
 pub fn detect_language<B: Backend>(
-    model: &mut Whisper<B>,
+    model: &Whisper<B>,
     tokenizer: &Gpt2Tokenizer,
     mel: &Tensor<B, 3>,
 ) -> (Language, f32) {
+    let mel = pad_or_trim(mel, N_FRAMES);
     let [_bsize, _, seq_len] = mel.dims();
+    println!("before mel dims = {:?}", mel.dims());
     let mel = model.forward_encoder(mel.clone());
+    println!("after mel dims = {:?}", mel.dims());
     // let mel = mel.clone().narrow(
     //     2,
     //     0,
@@ -207,25 +208,38 @@ pub fn detect_language<B: Backend>(
     let device = &mel.device();
     let language_token_ids = whisper::token::LANGUAGES
         .iter()
-        .map(|t| tokenizer.special_token(SpecialToken::Language(Language::from_str(t).unwrap())).unwrap())
+        .map(|t| {
+            println!("{t}");
+            tokenizer
+                .special_token(SpecialToken::Language(Language::from_str(t).unwrap()))
+                .unwrap()
+        })
         .collect::<Vec<_>>();
-    let sot_token = tokenizer.special_token(SpecialToken::StartofTranscript).unwrap();
+    let sot_token = tokenizer
+        .special_token(SpecialToken::StartofTranscript)
+        .unwrap();
+
     let n_audio = mel.dims()[0];
-    let x = Tensor::<B, 2, Int>::full([n_audio, 1], sot_token as i32, device,
-    );
+    let x = Tensor::<B, 2, Int>::full([n_audio, 1], sot_token as i32, device);
     let logits = model.forward_decoder(x, mel);
+    //
     let logits_dims = logits.dims();
     let mask = Tensor::<B, 1>::ones([logits_dims[2]], device);
     for l_token_id in language_token_ids {
         mask.to_data().value[l_token_id] = B::FloatElem::zero();
     }
+    let mask = mask
+        .unsqueeze::<2>()
+        .repeat(0, logits_dims[0] * logits_dims[1])
+        .reshape(logits_dims);
+    let mask = mask.equal(Tensor::<B, 3>::ones(logits_dims, device));
 
-    let language_tokens = logits.clone().argmax(2);// language_tokens = logits.argmax(dim=-1)
-    let language_token_probs = softmax(logits, 2);// dim= -1
+    let logits = logits.mask_fill(mask, -f32::INFINITY);
+    let language_tokens = logits.clone().argmax(2); // language_tokens = logits.argmax(dim=-1)
+    let language_token_probs = softmax(logits, 2); // dim= -1
 
-    let (a, b) =  language_token_probs.max_dim_with_indices(2);
+    let (a, b) = language_token_probs.max_dim_with_indices(2);
     return (Language::English, 1.0f32);
-
 
     // logits[:, mask] = -np.inf
     //
@@ -316,8 +330,8 @@ pub fn transcribe<B: Backend>(
     temperature: Vec<f32>, // (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 
     compression_ratio_threshold: Option<f32>, // 2.4
-    logprob_threshold: Option<f32>, // -1
-    no_speech_threshold: Option<f32>, // 0.6
+    logprob_threshold: Option<f32>,           // -1
+    no_speech_threshold: Option<f32>,         // 0.6
     // sample_rate: usize, 16k
     clip_timestamps: Vec<(f32, f32)>,
     decode_options: &whisper::decoding::DecodingOptions,
@@ -332,9 +346,10 @@ pub fn transcribe<B: Backend>(
         burn::tensor::Data::new(audio, [1, input_len].into()),
         &device,
     )
-        .to_device(&device);
+    .to_device(&device);
 
     let mel = log_mel_spectrogram::<B>(audio);
+    let (a, b) = detect_language(&whisper, &_bpe, &mel);
     let seek_clips = clip_timestamps
         .iter()
         .map(|(s, t)| {
@@ -367,7 +382,9 @@ pub fn transcribe<B: Backend>(
             std::cmp::min(content_frames - seek, seek_clip_end - seek),
         );
         let mel_dim_0 = mel.shape().dims[1];
-        let mel_segment = mel.clone().slice([0..1, 0..mel_dim_0, seek..seek + segment_size]);
+        let mel_segment = mel
+            .clone()
+            .slice([0..1, 0..mel_dim_0, seek..seek + segment_size]);
         let segment_duration = (segment_size * HOP_LENGTH) as f32 / (SAMPLE_RATE as f32);
         let padded_mel_segment = whisper::audio::pad_or_trim(&mel_segment, N_FRAMES);
         let res = decode_with_fallback(

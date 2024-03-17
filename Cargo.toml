@@ -9,6 +9,7 @@ build = "build.rs"
 default = ["wgpu-backend"]
 torch-backend = ["burn-tch", "burn/tch"]
 wgpu-backend = ["burn-wgpu", "burn/wgpu"]
+ffmpeg-input = ["ffmpeg-next"]
 
 [dependencies]
 burn-import = { path = "burn/crates/burn-import", version = "0.13.0" }
@@ -38,7 +39,7 @@ ffmpeg-next = { version = "6.1.1", features = [
     "build-lib-x264",
     "build-lib-x265",
     "build-lib-vpx"
-] }
+], optional = true }
 
 [build-dependencies]
 pkg-config = "0.3"

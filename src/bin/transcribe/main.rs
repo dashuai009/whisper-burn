@@ -1,7 +1,7 @@
 mod lib;
 
-use whisper::transcribe::waveform_to_text;
 use whisper::model::*;
+use whisper::transcribe::waveform_to_text;
 
 use strum::IntoEnumIterator;
 
@@ -9,7 +9,9 @@ use whisper::token::{Gpt2Tokenizer, Language};
 
 use burn::record::{HalfPrecisionSettings, Recorder, RecorderError};
 
+#[cfg(feature = "ffmpeg-input")]
 use ffmpeg::{frame, media};
+#[cfg(feature = "ffmpeg-input")]
 use ffmpeg_next as ffmpeg;
 use std::{clone, slice};
 
@@ -26,6 +28,7 @@ use burn_import::pytorch::{LoadArgs, PyTorchFileRecorder};
 
 use hound::{self, SampleFormat};
 
+#[cfg(feature = "ffmpeg-input")]
 fn load_audio_waveform_with_ffmpeg(input_file: &str) -> Result<Vec<f32>, ffmpeg::Error> {
     ffmpeg::init().unwrap();
 
@@ -123,8 +126,11 @@ fn load_whisper_model_file<B: Backend>(
     device: &B::Device,
 ) -> Result<Whisper<B>, RecorderError> {
     let full_filename = format!("{filename}.pt");
-    let mut load_args = LoadArgs::new(full_filename.parse().unwrap());
-    load_args.debug = false;
+    let load_args = LoadArgs::new(full_filename.parse().unwrap())
+        .with_debug_print()
+        .with_key_remap("mlp.0", "mlp0")
+        .with_key_remap("mlp.2", "mlp2")
+        .with_top_level_key("model_state_dict");
     PyTorchFileRecorder::<HalfPrecisionSettings>::new()
         .load(load_args, device)
         .map(|record| config.init(device).load_record(record))
@@ -171,14 +177,15 @@ fn main() {
     println!("x = {}", x.0.len());
 
     println!("Loading waveform...");
-    let waveform = match load_audio_waveform_with_ffmpeg(wav_file) {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("Failed to load audio file: {}", e);
-            process::exit(1);
-        }
-    };
-    println!(" y = {}", waveform.len());
+    // let waveform = match load_audio_waveform_with_ffmpeg(wav_file) {
+    //     Ok(w) => w,
+    //     Err(e) => {
+    //         eprintln!("Failed to load audio file: {}", e);
+    //         process::exit(1);
+    //     }
+    // };
+    // println!(" y = {}", waveform.len());
+    let waveform = x.0;
 
     let bpe = match Gpt2Tokenizer::new() {
         Ok(bpe) => bpe,
