@@ -10,11 +10,10 @@ pub struct Gpt2Tokenizer {
 }
 
 impl Gpt2Tokenizer {
-    pub fn new() -> Result<Self> {
+    pub fn new<P: AsRef<std::path::Path>>(file: P) -> Result<Self> {
         //let mut tokenizer = tokenizers::Tokenizer::from_pretrained("gpt2", None)?;
-        let mut tokenizer = tokenizers::Tokenizer::from_file("tokenizer.json")?;
+        let tokenizer = tokenizers::Tokenizer::from_file(file)?;
         //tokenizer.add_special_tokens(&construct_special_tokens());
-
         Ok(Self { tokenizer })
     }
 
@@ -30,8 +29,10 @@ impl Gpt2Tokenizer {
     }
 
     pub fn decode(&self, tokens: &[usize], skip_special: bool) -> Result<String> {
-        self.tokenizer
-            .decode(&tokens.iter().map(|t| *t as u32).collect::<Vec<_>>(), skip_special)
+        self.tokenizer.decode(
+            &tokens.iter().map(|t| *t as u32).collect::<Vec<_>>(),
+            skip_special,
+        )
     }
 
     pub fn is_special(&self, token: usize) -> bool {
@@ -46,8 +47,6 @@ impl Gpt2Tokenizer {
         self.tokenizer.get_vocab_size(true)
     }
 }
-
-
 
 // LANGUAGES = {
 //     "en": "english",
@@ -158,7 +157,7 @@ pub const LANGUAGES: [&str; 98] = [
     "et", "mk", "br", "eu", "is", "hy", "ne", "mn", "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si",
     "km", "sn", "yo", "so", "af", "oc", "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo",
     "ht", "ps", "tk", "nn", "mt", "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "ln", "ha", "ba",
-    "jw", "su",  //"yue"
+    "jw", "su", //"yue"
 ];
 
 use strum_macros::EnumIter;
@@ -263,7 +262,7 @@ pub enum Language {
     Bashkir,
     Javanese,
     Sundanese,
-    // 
+    //
     Cantonese,
     // // Burmese,
     // Valencian,
@@ -474,7 +473,7 @@ impl Language {
             "jw" => Some(Language::Javanese),
             "su" => Some(Language::Sundanese),
             "yue" => Some(Language::Cantonese),
-            _ => None
+            _ => None,
         }
     }
 }

@@ -1,5 +1,5 @@
 mod lib;
-
+mod whsiper_helper;
 use whisper::model::*;
 use whisper::transcribe::waveform_to_text;
 
@@ -138,7 +138,8 @@ fn load_whisper_model_file<B: Backend>(
 
 use std::{env, fs, process};
 
-fn main() {
+#[tokio::main]
+async fn main() {
     cfg_if::cfg_if! {
         if #[cfg(feature = "wgpu-backend")] {
             type CurBackend = Wgpu<AutoGraphicsApi, f32, i32>;
@@ -187,33 +188,32 @@ fn main() {
     // println!(" y = {}", waveform.len());
     let waveform = x.0;
 
-    let bpe = match Gpt2Tokenizer::new() {
-        Ok(bpe) => bpe,
-        Err(e) => {
-            eprintln!("Failed to load tokenizer: {}", e);
-            process::exit(1);
-        }
-    };
+    // let bpe = match Gpt2Tokenizer::new() {
+    //     Ok(bpe) => bpe,
+    //     Err(e) => {
+    //         eprintln!("Failed to load tokenizer: {}", e);
+    //         process::exit(1);
+    //     }
+    // };
 
-    let whisper_config = match WhisperConfig::load(&format!("{}.cfg", model_name)) {
-        Ok(config) => config,
-        Err(e) => {
-            eprintln!("Failed to load whisper config: {}", e);
-            process::exit(1);
-        }
-    };
+    // let whisper_config = match WhisperConfig::load(&format!("{}.cfg", model_name)) {
+    //     Ok(config) => config,
+    //     Err(e) => {
+    //         eprintln!("Failed to load whisper config: {}", e);
+    //         process::exit(1);
+    //     }
+    // };
 
-    println!("Loading model...");
-    let whisper = match load_whisper_model_file::<CurBackend>(&whisper_config, model_name, &device)
-    {
-        Ok(whisper_model) => whisper_model,
-        Err(e) => {
-            eprintln!("Failed to load whisper model file: {}", e);
-            process::exit(1);
-        }
-    };
-
-    let whisper = whisper.to_device(&device);
+    // println!("Loading model...");
+    // let whisper = match load_whisper_model_file::<CurBackend>(&whisper_config, model_name, &device)
+    // {
+    //     Ok(whisper_model) => whisper_model,
+    //     Err(e) => {
+    //         eprintln!("Failed to load whisper model file: {}", e);
+    //         process::exit(1);
+    //     }
+    // };
+    let helper: whsiper_helper::WhisperHelper::<CurBackend> = whsiper_helper::WhisperHelper::new(whsiper_helper::WhichModel::Base, &device).await;
 
     let temperature = vec![];
     let compression_ratio_threshold = Some(2.4_f32);
@@ -223,8 +223,8 @@ fn main() {
     let mut decode_options = whisper::decoding::DecodingOptions::default();
 
     let r = lib::transcribe(
-        &whisper,
-        &bpe,
+        &helper.model,
+        &helper.tokenizer,
         lang,
         waveform.clone(),
         temperature,
@@ -236,18 +236,18 @@ fn main() {
         &device,
     );
     return;
-    let (text, _tokens) = match waveform_to_text(&whisper, &bpe, lang, waveform, 16000) {
-        Ok((text, tokens)) => (text, tokens),
-        Err(e) => {
-            eprintln!("Error during transcription: {}", e);
-            process::exit(1);
-        }
-    };
+    // let (text, _tokens) = match waveform_to_text(&whisper, &bpe, lang, waveform, 16000) {
+    //     Ok((text, tokens)) => (text, tokens),
+    //     Err(e) => {
+    //         eprintln!("Error during transcription: {}", e);
+    //         process::exit(1);
+    //     }
+    // };
 
-    fs::write(text_file, text).unwrap_or_else(|e| {
-        eprintln!("Error writing transcription file: {}", e);
-        process::exit(1);
-    });
+    // fs::write(text_file, text).unwrap_or_else(|e| {
+    //     eprintln!("Error writing transcription file: {}", e);
+    //     process::exit(1);
+    // });
 
-    println!("Transcription finished.");
+    // println!("Transcription finished.");
 }
