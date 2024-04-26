@@ -1,4 +1,4 @@
-pub mod load;
+// pub mod load;
 
 
 use burn::{
@@ -86,7 +86,7 @@ impl TextDecoderConfig {
         let positional_embedding = Tensor::random(
             [self.n_text_ctx, self.n_text_state],
             Distribution::Normal(0.0, 1.0), device,
-        ).into();
+        );
         let blocks: Vec<_> = (0..self.n_text_layer)
             .into_iter()
             .map(|_| {
@@ -119,7 +119,7 @@ impl TextDecoderConfig {
 #[derive(Module, Debug)]
 pub struct TextDecoder<B: Backend> {
     token_embedding: Embedding<B>,
-    positional_embedding: Param<Tensor<B, 2>>,
+    positional_embedding: Tensor<B, 2>,
     blocks: Vec<ResidualDecoderAttentionBlock<B>>,
     ln: nn::LayerNorm<B>,
     mask: Tensor<B, 2> ,
@@ -141,7 +141,7 @@ impl<B: Backend> TextDecoder<B> {
         let x = self.token_embedding.forward(x)
             + self
             .positional_embedding
-            .val()
+            .clone()
             .slice([0..seq_len])
             .unsqueeze::<3>();
 
@@ -191,8 +191,7 @@ impl AudioEncoderConfig {
         let positional_embedding = Tensor::random(
             [self.n_audio_ctx, self.n_audio_state],
             Distribution::Normal(0.0, 1.0),
-            device)
-        .into();
+            device);
         let n_mels = self.n_mels;
         let n_audio_ctx = self.n_audio_ctx;
 
@@ -214,7 +213,7 @@ pub struct AudioEncoder<B: Backend> {
     conv2: Conv1d<B>,
     blocks: Vec<ResidualEncoderAttentionBlock<B>>,
     ln_post: nn::LayerNorm<B>,
-    positional_embedding: Param<Tensor<B, 2>>,
+    positional_embedding: Tensor<B, 2>,
     n_mels: usize,
     n_audio_ctx: usize,
 }
@@ -242,7 +241,7 @@ impl<B: Backend> AudioEncoder<B> {
         let k = x.dims()[1];
         let x = x + self
             .positional_embedding
-            .val()
+            .clone()
             .slice([0..k])
             .unsqueeze::<3>();
 

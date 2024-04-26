@@ -30,9 +30,9 @@ use hound::{self, SampleFormat};
 
 #[cfg(feature = "ffmpeg-input")]
 fn load_audio_waveform_with_ffmpeg(input_file: &str) -> Result<Vec<f32>, ffmpeg::Error> {
-    ffmpeg::init().unwrap();
+    ffmpeg::init()?;
 
-    let mut ictx = ffmpeg::format::input(&input_file).unwrap();
+    let mut ictx = ffmpeg::format::input(&input_file)?;
     let input_audio_stream = ictx
         .streams()
         .best(media::Type::Audio)
@@ -174,9 +174,6 @@ async fn main() {
 
     let model_name = &args[1];
 
-    let x = load_audio_waveform(wav_file).unwrap();
-    println!("x = {}", x.0.len());
-
     println!("Loading waveform...");
     // let waveform = match load_audio_waveform_with_ffmpeg(wav_file) {
     //     Ok(w) => w,
@@ -250,4 +247,28 @@ async fn main() {
     // });
 
     // println!("Transcription finished.");
+}
+
+
+
+#[cfg(test)]
+mod test{
+    use num_traits::abs;
+    use crate::{load_audio_waveform, load_audio_waveform_with_ffmpeg};
+
+
+    #[test]
+    fn test_input(){
+        let input_file = "./audio16k.wav";
+
+        let x = load_audio_waveform(input_file).unwrap();
+        let y = load_audio_waveform_with_ffmpeg(input_file).unwrap();
+        for i in 0..x.0.len(){
+            if abs(x.0[i]- y[i]) > 2e-5 {
+                println!("{i} {} {} {}",x.0[i], y[i], abs(x.0[i]- y[i]));
+            }
+        }
+        println!("len1 = {}, len2 = {}", x.0.len(), y.len());
+        assert_eq!(x.0.len(), y.len());
+    }
 }
