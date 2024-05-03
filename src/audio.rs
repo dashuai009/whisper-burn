@@ -389,7 +389,7 @@ mod test {
     use burn::tensor::backend::Backend;
     use burn::tensor::Tensor;
 
-    use crate::audio::{mel_frequencies_device, pad_or_trim};
+    use crate::audio::{hann_window_device, log_mel_spectrogram, mel_frequencies_device, N_SAMPLES, pad_or_trim, stfft, WINDOW_LENGTH};
 
     // #[test]
     // fn test_fft_frequencies() {
@@ -454,5 +454,29 @@ mod test {
         output1.to_data().assert_approx_eq(
             &expected1.to_data(), 7,
         );
+    }
+
+    #[test]
+    fn test_log_mel(){
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "wgpu-backend")] {
+                type CurBackend = burn_wgpu::Wgpu<burn_wgpu::AutoGraphicsApi, f32, i32>;
+                let device = burn_wgpu::WgpuDevice::BestAvailable;
+            } else if #[cfg(feature = "torch-backend")] {
+                type CurBackend = LibTorch<f32>;
+                let device = LibTorchDevice::Cuda(0);
+            }
+        }
+        let input = Tensor::<CurBackend, 1>::from_data(
+            [10.0, 20.0, 30.0],
+            &device,
+        );
+        let audio = pad_or_trim(&input, N_SAMPLES).unsqueeze::<2>();
+        let window = hann_window_device(WINDOW_LENGTH, &device);
+        let (x,y) = stfft(audio.clone(), 400, 160, window);
+        println!("x = {:?} {:?}\n",x.dims(), x.slice([0..1, 0..201, 0..10]).to_data());
+        let out = log_mel_spectrogram(audio);
+        println!("out = {:?}", out.to_data());
+
     }
 }

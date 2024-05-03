@@ -1,7 +1,7 @@
 use std::{collections::HashMap, marker::PhantomData};
 
 use burn::tensor::activation::softmax;
-use burn::tensor::{backend::Backend,  Device, Int, Tensor};
+use burn::tensor::{backend::Backend, Device, Int, Tensor};
 use num_traits::{clamp, Zero};
 use whisper::audio::pad_or_trim;
 use whisper::token::{Gpt2Tokenizer, Language, SpecialToken};
@@ -10,65 +10,6 @@ use whisper::{
     decoding::DecodingOptions,
     model::Whisper,
 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WhichModel {
-    Tiny,
-    // #[value(name = "tiny.en")]
-    TinyEn,
-    Base,
-    // #[value(name = "base.en")]
-    BaseEn,
-    Small,
-    // #[value(name = "small.en")]
-    SmallEn,
-    Medium,
-    // #[value(name = "medium.en")]
-    MediumEn,
-    Large,
-    LargeV2,
-    LargeV3,
-    // #[value(name = "distil-medium.en")]
-    DistilMediumEn,
-    // #[value(name = "distil-large-v2")]
-    DistilLargeV2,
-}
-
-impl WhichModel {
-    fn is_multilingual(&self) -> bool {
-        match self {
-            Self::Tiny
-            | Self::Base
-            | Self::Small
-            | Self::Medium
-            | Self::Large
-            | Self::LargeV2
-            | Self::LargeV3
-            | Self::DistilLargeV2 => true,
-            Self::TinyEn | Self::BaseEn | Self::SmallEn | Self::MediumEn | Self::DistilMediumEn => {
-                false
-            }
-        }
-    }
-
-    fn model_and_revision(&self) -> (&'static str, &'static str) {
-        match self {
-            Self::Tiny => ("openai/whisper-tiny", "main"),
-            Self::TinyEn => ("openai/whisper-tiny.en", "refs/pr/15"),
-            Self::Base => ("openai/whisper-base", "refs/pr/22"),
-            Self::BaseEn => ("openai/whisper-base.en", "refs/pr/13"),
-            Self::Small => ("openai/whisper-small", "main"),
-            Self::SmallEn => ("openai/whisper-small.en", "refs/pr/10"),
-            Self::Medium => ("openai/whisper-medium", "main"),
-            Self::MediumEn => ("openai/whisper-medium.en", "main"),
-            Self::Large => ("openai/whisper-large", "refs/pr/36"),
-            Self::LargeV2 => ("openai/whisper-large-v2", "refs/pr/57"),
-            Self::LargeV3 => ("openai/whisper-large-v3", "main"),
-            Self::DistilMediumEn => ("distil-whisper/distil-medium.en", "main"),
-            Self::DistilLargeV2 => ("distil-whisper/distil-large-v2", "main"),
-        }
-    }
-}
 
 #[derive(Debug)]
 struct DecodingResult<B: Backend> {
@@ -189,90 +130,6 @@ pub const NO_TIMESTAMPS_TOKEN: &str = "<|notimestamps|>";
 pub const EOT_TOKEN: &str = "<|endoftext|>";
 pub const NO_SPEECH_TOKENS: [&str; 2] = ["<|nocaptions|>", "<|nospeech|>"];
 
-/// Returns the token id for the selected language.
-pub fn detect_language<B: Backend>(
-    model: &Whisper<B>,
-    tokenizer: &Gpt2Tokenizer,
-    mel: &Tensor<B, 3>,
-) -> (Language, f32) {
-    let mel = pad_or_trim(mel, N_FRAMES);
-    let [_bsize, _, seq_len] = mel.dims();
-    println!("before mel dims = {:?}", mel.dims());
-    let mel = model.forward_encoder(mel.clone());
-    println!("after mel dims = {:?}", mel.dims());
-    // let mel = mel.clone().narrow(
-    //     2,
-    //     0,
-    //     usize::min(seq_len, model.config().max_source_positions),
-    // )?;
-    let device = &mel.device();
-    let language_token_ids = whisper::token::LANGUAGES
-        .iter()
-        .map(|t| {
-            println!("{t}");
-            tokenizer
-                .special_token(SpecialToken::Language(Language::from_str(t).unwrap()))
-                .unwrap()
-        })
-        .collect::<Vec<_>>();
-    let sot_token = tokenizer
-        .special_token(SpecialToken::StartofTranscript)
-        .unwrap();
-
-    let n_audio = mel.dims()[0];
-    let x = Tensor::<B, 2, Int>::full([n_audio, 1], sot_token as i32, device);
-    let logits = model.forward_decoder(x, mel);
-    //
-    let logits_dims = logits.dims();
-    let mask = Tensor::<B, 1>::ones([logits_dims[2]], device);
-    for l_token_id in language_token_ids {
-        mask.to_data().value[l_token_id] = B::FloatElem::zero();
-    }
-    let mask = mask
-        .unsqueeze::<2>()
-        .repeat(0, logits_dims[0] * logits_dims[1])
-        .reshape(logits_dims);
-    let mask = mask.equal(Tensor::<B, 3>::ones(logits_dims, device));
-
-    let logits = logits.mask_fill(mask, -f32::INFINITY);
-    let language_tokens = logits.clone().argmax(2); // language_tokens = logits.argmax(dim=-1)
-    let language_token_probs = softmax(logits, 2); // dim= -1
-
-    let (a, b) = language_token_probs.max_dim_with_indices(2);
-    return (Language::English, 1.0f32);
-
-    // logits[:, mask] = -np.inf
-    //
-    // language_token_probs = logits.softmax(dim=-1).cpu()
-    // language_probs = [
-    //     {
-    //         c: language_token_probs[i, j].item()
-    //         for j, c in zip(tokenizer.all_language_tokens, tokenizer.all_language_codes)
-    //     }
-    // for i in range(n_audio)
-    // ]
-    //
-    // if single:
-    //     language_tokens = language_tokens[0]
-    // language_probs = language_probs[0]
-    //
-    // return language_tokens, language_probs
-
-    // let language_token_ids = Tensor::new(language_token_ids.as_slice(), device)?;
-    // let ys = model.decoder_forward(&tokens, &audio_features, true)?;
-    // let logits = model.decoder_final_linear(&ys.i(..1)?)?.i(0)?.i(0)?;
-    // let logits = logits.index_select(&language_token_ids, 0)?;
-    // let probs = candle_nn::ops::softmax(&logits, D::Minus1)?;
-    // let probs = probs.to_vec1::<f32>()?;
-    // let mut probs = whisper::token::LANGUAGES.iter().zip(probs.iter()).collect::<Vec<_>>();
-    // probs.sort_by(|(_, p1), (_, p2)| p2.total_cmp(p1));
-    // for ((_, language), p) in probs.iter().take(5) {
-    //     println!("{language}: {p}")
-    // }
-    // let language = crate::token_id(tokenizer, &format!("<|{}|>", probs[0].0.0))?;
-    // Ok(language)
-}
-
 fn decode_with_fallback<B: Backend>(
     segment: &Tensor<B, 3>,
     model: &Whisper<B>,
@@ -337,66 +194,79 @@ pub fn transcribe<B: Backend>(
     decode_options: &whisper::decoding::DecodingOptions,
     device: &Device<B>,
 ) {
-    // Pad 30-seconds of silence to the input audio, for slicing
-    for i in 0..N_SAMPLES {
-        audio.push(i as f32);
-    }
-    let input_len = audio.len();
-    let audio = Tensor::<B, 2>::from_floats(
-        burn::tensor::Data::new(audio, [1, input_len].into()),
-        &device,
-    )
-    .to_device(&device);
+    // println!("begin transcribe");
+    // // Pad 30-seconds of silence to the input audio, for slicing
+    // for i in 0..N_SAMPLES {
+    //     audio.push(i as f32);
+    // }
+    // let input_len = audio.len();
+    // let audio = Tensor::<B, 2>::from_floats(
+    //     burn::tensor::Data::new(audio, [1, input_len].into()),
+    //     &device,
+    // )
+    // .to_device(&device);
+    //
+    // let mel = log_mel_spectrogram::<B>(audio);
+    // let (a, b) = detect_language(&whisper, &_bpe, &mel);
+    // println!("detect: {a:?}, props: {b}");
+    // return;
+    // return;
+    // let seek_clips = clip_timestamps
+    //     .iter()
+    //     .map(|(s, t)| {
+    //         return (
+    //             (s.round() as usize) * FRAMES_PER_SECOND,
+    //             (t.round() as usize) * FRAMES_PER_SECOND,
+    //         );
+    //     })
+    //     .collect::<Vec<_>>();
+    //
+    // if seek_clips.len() == 0 {
+    //     return;
+    // }
+    //
+    // let content_frames = *(mel.shape().dims.last().unwrap());
+    // let content_duration = ((content_frames * HOP_LENGTH) as f32) / (SAMPLE_RATE as f32);
+    //
+    // let punctuation = "\"'“¿([{-\"'.。,，!！?？:：”)]}、";
+    //
+    // let mut seek = seek_clips[0].0;
+    // // let mut all_tokens = vec![];
+    //
+    // for (seek_clip_start, seek_clip_end) in seek_clips {
+    //     seek = clamp(seek, seek_clip_start, seek_clip_start);
+    //
+    //     let time_offset = ((seek * HOP_LENGTH) as f32) / (SAMPLE_RATE as f32);
+    //     let window_end_time = (((seek + N_FRAMES) * HOP_LENGTH) as f32) / (SAMPLE_RATE as f32);
+    //     let segment_size = std::cmp::min(
+    //         N_FRAMES,
+    //         std::cmp::min(content_frames - seek, seek_clip_end - seek),
+    //     );
+    //     let mel_dim_0 = mel.shape().dims[1];
+    //     let mel_segment = mel
+    //         .clone()
+    //         .slice([0..1, 0..mel_dim_0, seek..seek + segment_size]);
+    //     let segment_duration = (segment_size * HOP_LENGTH) as f32 / (SAMPLE_RATE as f32);
+    //     let padded_mel_segment = whisper::audio::pad_or_trim(&mel_segment, N_FRAMES);
+    //     let res = decode_with_fallback(
+    //         &padded_mel_segment,
+    //         &whisper,
+    //         &temperature,
+    //         decode_options,
+    //         compression_ratio_threshold,
+    //         logprob_threshold,
+    //         no_speech_threshold,
+    //         device,
+    //     );
+    //     println!("{:?}", res);
+    // }
+}
 
-    let mel = log_mel_spectrogram::<B>(audio);
-    let (a, b) = detect_language(&whisper, &_bpe, &mel);
-    let seek_clips = clip_timestamps
-        .iter()
-        .map(|(s, t)| {
-            return (
-                (s.round() as usize) * FRAMES_PER_SECOND,
-                (t.round() as usize) * FRAMES_PER_SECOND,
-            );
-        })
-        .collect::<Vec<_>>();
 
-    if seek_clips.len() == 0 {
-        return;
-    }
+#[cfg(test)]
+mod test{
+    #[test]
+    fn test_detect_language(){
 
-    let content_frames = *(mel.shape().dims.last().unwrap());
-    let content_duration = ((content_frames * HOP_LENGTH) as f32) / (SAMPLE_RATE as f32);
-
-    let punctuation = "\"'“¿([{-\"'.。,，!！?？:：”)]}、";
-
-    let mut seek = seek_clips[0].0;
-    // let mut all_tokens = vec![];
-
-    for (seek_clip_start, seek_clip_end) in seek_clips {
-        seek = clamp(seek, seek_clip_start, seek_clip_start);
-
-        let time_offset = ((seek * HOP_LENGTH) as f32) / (SAMPLE_RATE as f32);
-        let window_end_time = (((seek + N_FRAMES) * HOP_LENGTH) as f32) / (SAMPLE_RATE as f32);
-        let segment_size = std::cmp::min(
-            N_FRAMES,
-            std::cmp::min(content_frames - seek, seek_clip_end - seek),
-        );
-        let mel_dim_0 = mel.shape().dims[1];
-        let mel_segment = mel
-            .clone()
-            .slice([0..1, 0..mel_dim_0, seek..seek + segment_size]);
-        let segment_duration = (segment_size * HOP_LENGTH) as f32 / (SAMPLE_RATE as f32);
-        let padded_mel_segment = whisper::audio::pad_or_trim(&mel_segment, N_FRAMES);
-        let res = decode_with_fallback(
-            &padded_mel_segment,
-            &whisper,
-            &temperature,
-            decode_options,
-            compression_ratio_threshold,
-            logprob_threshold,
-            no_speech_threshold,
-            device,
-        );
-        println!("{:?}", res);
     }
 }

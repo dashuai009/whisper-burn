@@ -6,20 +6,21 @@ build = "build.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["wgpu-backend"]
+default = ["wgpu-backend", "hound-input"]
 torch-backend = ["burn-tch", "burn/tch"]
 wgpu-backend = ["burn-wgpu", "burn/wgpu"]
 ffmpeg-input = ["ffmpeg-next"]
+hound-input = ["hound"]
 
 [dependencies]
 burn-import = {  version = "0.13.0" }
-burn = {  version = "0.13.0", optional = true }
-burn-tch = { version = "0.13.0", optional = true }
-burn-wgpu = {  version = "0.13.0", optional = true }
+burn = {  version = "0.13.1", optional = true }
+burn-tch = { version = "0.13.1", optional = true }
+burn-wgpu = {  version = "0.13.1", optional = true }
 
 serde = { version = "1", features = ["std", "derive"] }
 num-traits = "0.2.15"
-hound = "3.5.1"
+hound = { version = "3.5.1", optional = true }
 tokenizers = { version = "0.15.2", default-features = false, features = [
     "onig",
     "http",
@@ -28,9 +29,9 @@ npy = "0.4.0"
 cfg-if = "1"
 strum = "0.26.1"
 strum_macros = "0.26.1"
-zip = "0.6.6"
+#zip = "0.6.6"
 
-ffmpeg-next = { version = "6.1.1", features = [
+ffmpeg-next = { version = "7.0.0", features = [
     "build",
     # "build-lib-snappy",
     "build-lib-dav1d",
@@ -46,3 +47,13 @@ tokio = { version = "1", features = ["full"] }
 
 [build-dependencies]
 pkg-config = "0.3"
+
+#test_log_mel =  tensor([10., 20., 30.])
+#test_log_mel =  tensor([10., 20., 30.,  ...,  0.,  0.,  0.])
+#test _ mel =  tensor([[ 1.6195,  1.1098, -0.3805,  ..., -0.3805, -0.3805, -0.3805],
+#[ 1.6193,  1.1096, -0.3805,  ..., -0.3805, -0.3805, -0.3805],
+#[ 1.6190,  1.1093, -0.3805,  ..., -0.3805, -0.3805, -0.3805],
+#...,
+#[ 1.2384,  0.7320, -0.3805,  ..., -0.3805, -0.3805, -0.3805],
+#[ 1.2957,  0.7874, -0.3805,  ..., -0.3805, -0.3805, -0.3805],
+#[ 1.3261,  0.8171, -0.3805,  ..., -0.3805, -0.3805, -0.3805]])

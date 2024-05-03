@@ -1,5 +1,6 @@
 mod lib;
 mod whsiper_helper;
+
 use whisper::model::*;
 use whisper::transcribe::waveform_to_text;
 
@@ -28,8 +29,21 @@ use burn_import::pytorch::{LoadArgs, PyTorchFileRecorder};
 
 use hound::{self, SampleFormat};
 
+/// 从音视频文件中提取音频数据
+/// 音频数据为16k Hz
+/// //  cmd = [
+//         "ffmpeg",
+//         "-nostdin",
+//         "-threads", "0",
+//         "-i", file,
+//         "-f", "s16le",
+//         "-ac", "1",
+//         "-acodec", "pcm_s16le",
+//         "-ar", str(sr),
+//         "-"
+//     ]
 #[cfg(feature = "ffmpeg-input")]
-fn load_audio_waveform_with_ffmpeg(input_file: &str) -> Result<Vec<f32>, ffmpeg::Error> {
+pub fn load_audio_waveform_with_ffmpeg(input_file: &str) -> Result<Vec<f32>, ffmpeg::Error> {
     ffmpeg::init()?;
 
     let mut ictx = ffmpeg::format::input(&input_file)?;
@@ -94,6 +108,7 @@ fn load_audio_waveform_with_ffmpeg(input_file: &str) -> Result<Vec<f32>, ffmpeg:
     }
     Ok(res)
 }
+
 fn load_audio_waveform(filename: &str) -> hound::Result<(Vec<f32>, usize)> {
     let reader = hound::WavReader::open(filename)?;
     let spec = reader.spec();
@@ -137,9 +152,14 @@ fn load_whisper_model_file<B: Backend>(
 }
 
 use std::{env, fs, process};
+use burn::prelude::Tensor;
+use whisper::audio::{log_mel_spectrogram, N_FRAMES, N_SAMPLES, pad_or_trim};
+use crate::whsiper_helper::{WhichModel, WhisperHelper};
 
 #[tokio::main]
 async fn main() {
+    let wav_file = "./audio16k.wav";
+
     cfg_if::cfg_if! {
         if #[cfg(feature = "wgpu-backend")] {
             type CurBackend = Wgpu<AutoGraphicsApi, f32, i32>;
@@ -149,123 +169,149 @@ async fn main() {
             let device = LibTorchDevice::Cuda(0);
         }
     }
-
-    let args: Vec<String> = env::args().collect();
-
-    if args.len() < 5 {
-        eprintln!(
-            "Usage: {} <model name> <audio file> <lang> <transcription file>",
-            args[0]
-        );
-        process::exit(1);
-    }
-
-    let wav_file = &args[2];
-    let text_file = &args[4];
-
-    let lang_str = &args[3];
-    let lang = match Language::iter().find(|lang| lang.as_str() == lang_str) {
-        Some(lang) => lang,
-        None => {
-            eprintln!("Invalid language abbreviation: {}", lang_str);
+    let helper: WhisperHelper<CurBackend> = WhisperHelper::new(WhichModel::Base, &device).await;
+    println!("Loading waveform...");
+    let (waveform, _) = match load_audio_waveform(wav_file) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("Failed to load audio file: {}", e);
             process::exit(1);
         }
     };
+    println!("wave len = {}", waveform.len());
 
-    let model_name = &args[1];
-
-    println!("Loading waveform...");
-    // let waveform = match load_audio_waveform_with_ffmpeg(wav_file) {
-    //     Ok(w) => w,
-    //     Err(e) => {
-    //         eprintln!("Failed to load audio file: {}", e);
-    //         process::exit(1);
-    //     }
-    // };
-    // println!(" y = {}", waveform.len());
-    let waveform = x.0;
-
-    // let bpe = match Gpt2Tokenizer::new() {
-    //     Ok(bpe) => bpe,
-    //     Err(e) => {
-    //         eprintln!("Failed to load tokenizer: {}", e);
-    //         process::exit(1);
-    //     }
-    // };
-
-    // let whisper_config = match WhisperConfig::load(&format!("{}.cfg", model_name)) {
-    //     Ok(config) => config,
-    //     Err(e) => {
-    //         eprintln!("Failed to load whisper config: {}", e);
-    //         process::exit(1);
-    //     }
-    // };
-
-    // println!("Loading model...");
-    // let whisper = match load_whisper_model_file::<CurBackend>(&whisper_config, model_name, &device)
-    // {
-    //     Ok(whisper_model) => whisper_model,
-    //     Err(e) => {
-    //         eprintln!("Failed to load whisper model file: {}", e);
-    //         process::exit(1);
-    //     }
-    // };
-    let helper: whsiper_helper::WhisperHelper::<CurBackend> = whsiper_helper::WhisperHelper::new(whsiper_helper::WhichModel::Base, &device).await;
-
-    let temperature = vec![];
+    // let temperature = vec![];
     let compression_ratio_threshold = Some(2.4_f32);
     let logprob_threshold = Some(-1.0_f32);
     let no_speech_threshold = Some(0.6_f32);
     let clip_timestamps = vec![(0.0f32, 3.0f32)];
     let mut decode_options = whisper::decoding::DecodingOptions::default();
 
-    let r = lib::transcribe(
-        &helper.model,
-        &helper.tokenizer,
-        lang,
-        waveform.clone(),
-        temperature,
-        compression_ratio_threshold,
-        logprob_threshold,
-        no_speech_threshold,
-        clip_timestamps,
-        &decode_options,
+    let lang = Language::English;
+
+
+    println!("begin transcribe");
+    let input_len = waveform.len();
+    let audio = Tensor::<CurBackend, 2>::from_floats(
+        burn::tensor::Data::new(waveform, [1, input_len].into()),
         &device,
-    );
+    )
+        .to_device(&device);
+    // Pad 30-seconds of silence to the input audio, for slicing
+    let audio = pad_or_trim(&audio, N_SAMPLES);
+    let mel = log_mel_spectrogram::<CurBackend>(audio);
+    println!("mel = {:}", mel);
+    let (a, b) = helper.detect_language(&mel);
+    // println!("detect: {a:?}, props: {b}");
+
     return;
-    // let (text, _tokens) = match waveform_to_text(&whisper, &bpe, lang, waveform, 16000) {
-    //     Ok((text, tokens)) => (text, tokens),
-    //     Err(e) => {
-    //         eprintln!("Error during transcription: {}", e);
+    //
+    // let args: Vec<String> = env::args().collect();
+    //
+    // if args.len() < 5 {
+    //     eprintln!(
+    //         "Usage: {} <model name> <audio file> <lang> <transcription file>",
+    //         args[0]
+    //     );
+    //     process::exit(1);
+    // }
+    //
+    // let wav_file = &args[2];
+    // let text_file = &args[4];
+    //
+    // let lang_str = &args[3];
+    // let lang = match Language::iter().find(|lang| lang.as_str() == lang_str) {
+    //     Some(lang) => lang,
+    //     None => {
+    //         eprintln!("Invalid language abbreviation: {}", lang_str);
     //         process::exit(1);
     //     }
     // };
-
-    // fs::write(text_file, text).unwrap_or_else(|e| {
-    //     eprintln!("Error writing transcription file: {}", e);
-    //     process::exit(1);
-    // });
-
-    // println!("Transcription finished.");
+    //
+    // let model_name = &args[1];
+    //
+    // // let bpe = match Gpt2Tokenizer::new() {
+    // //     Ok(bpe) => bpe,
+    // //     Err(e) => {
+    // //         eprintln!("Failed to load tokenizer: {}", e);
+    // //         process::exit(1);
+    // //     }
+    // // };
+    //
+    // // let whisper_config = match WhisperConfig::load(&format!("{}.cfg", model_name)) {
+    // //     Ok(config) => config,
+    // //     Err(e) => {
+    // //         eprintln!("Failed to load whisper config: {}", e);
+    // //         process::exit(1);
+    // //     }
+    // // };
+    //
+    // // println!("Loading model...");
+    // // let whisper = match load_whisper_model_file::<CurBackend>(&whisper_config, model_name, &device)
+    // // {
+    // //     Ok(whisper_model) => whisper_model,
+    // //     Err(e) => {
+    // //         eprintln!("Failed to load whisper model file: {}", e);
+    // //         process::exit(1);
+    // //     }
+    // // };
+    // let helper: whsiper_helper::WhisperHelper::<CurBackend> = whsiper_helper::WhisperHelper::new(whsiper_helper::WhichModel::Base, &device).await;
+    //
+    // let temperature = vec![];
+    // let compression_ratio_threshold = Some(2.4_f32);
+    // let logprob_threshold = Some(-1.0_f32);
+    // let no_speech_threshold = Some(0.6_f32);
+    // let clip_timestamps = vec![(0.0f32, 3.0f32)];
+    // let mut decode_options = whisper::decoding::DecodingOptions::default();
+    //
+    // let r = lib::transcribe(
+    //     &helper.model,
+    //     &helper.tokenizer,
+    //     lang,
+    //     waveform.clone(),
+    //     temperature,
+    //     compression_ratio_threshold,
+    //     logprob_threshold,
+    //     no_speech_threshold,
+    //     clip_timestamps,
+    //     &decode_options,
+    //     &device,
+    // );
+    // return;
+    // // let (text, _tokens) = match waveform_to_text(&whisper, &bpe, lang, waveform, 16000) {
+    // //     Ok((text, tokens)) => (text, tokens),
+    // //     Err(e) => {
+    // //         eprintln!("Error during transcription: {}", e);
+    // //         process::exit(1);
+    // //     }
+    // // };
+    //
+    // // fs::write(text_file, text).unwrap_or_else(|e| {
+    // //     eprintln!("Error writing transcription file: {}", e);
+    // //     process::exit(1);
+    // // });
+    //
+    // // println!("Transcription finished.");
 }
 
 
-
 #[cfg(test)]
-mod test{
+mod test {
     use num_traits::abs;
     use crate::{load_audio_waveform, load_audio_waveform_with_ffmpeg};
 
 
     #[test]
-    fn test_input(){
+    fn test_input() {
         let input_file = "./audio16k.wav";
+        let raw_input = "./audio16k.wav";
 
         let x = load_audio_waveform(input_file).unwrap();
-        let y = load_audio_waveform_with_ffmpeg(input_file).unwrap();
-        for i in 0..x.0.len(){
-            if abs(x.0[i]- y[i]) > 2e-5 {
-                println!("{i} {} {} {}",x.0[i], y[i], abs(x.0[i]- y[i]));
+        let y = load_audio_waveform_with_ffmpeg(raw_input).unwrap();
+        assert_eq!(x.0.len(), y.len());
+        for i in 0..x.0.len() {
+            if abs(x.0[i] - y[i]) > 1e-5 {
+                println!("{i} {} {} {}", x.0[i], y[i], abs(x.0[i] - y[i]));
             }
         }
         println!("len1 = {}, len2 = {}", x.0.len(), y.len());

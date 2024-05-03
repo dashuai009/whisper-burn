@@ -11,8 +11,10 @@ use burn::{
     },
     tensor::{activation::softmax, backend::Backend, module::embedding, Distribution, Int, Tensor},
 };
+use burn::module::ParamId;
 use burn::nn::{Embedding, EmbeddingConfig, Linear};
-use burn::tensor::Device;
+use burn::tensor::{Device, Float};
+use num_traits::real::Real;
 
 #[derive(Config, Debug)]
 pub struct WhisperConfig {
@@ -83,9 +85,11 @@ pub struct TextDecoderConfig {
 impl TextDecoderConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> TextDecoder<B> {
         let token_embedding = EmbeddingConfig::new(self.n_vocab, self.n_text_state).init(device);
-        let positional_embedding = Tensor::random(
-            [self.n_text_ctx, self.n_text_state],
-            Distribution::Normal(0.0, 1.0), device,
+        let positional_embedding = Param::initialized(
+            ParamId::new(),
+            Tensor::<B, 2>::empty(
+                [self.n_text_ctx, self.n_text_state], device,
+            ),
         );
         let blocks: Vec<_> = (0..self.n_text_layer)
             .into_iter()
@@ -119,10 +123,10 @@ impl TextDecoderConfig {
 #[derive(Module, Debug)]
 pub struct TextDecoder<B: Backend> {
     token_embedding: Embedding<B>,
-    positional_embedding: Tensor<B, 2>,
+    positional_embedding: Param<Tensor<B, 2>>,
     blocks: Vec<ResidualDecoderAttentionBlock<B>>,
     ln: nn::LayerNorm<B>,
-    mask: Tensor<B, 2> ,
+    mask: Tensor<B, 2>,
     n_vocab: usize,
     n_text_ctx: usize,
 }
@@ -141,7 +145,7 @@ impl<B: Backend> TextDecoder<B> {
         let x = self.token_embedding.forward(x)
             + self
             .positional_embedding
-            .clone()
+            .val()
             .slice([0..seq_len])
             .unsqueeze::<3>();
 
@@ -159,6 +163,29 @@ impl<B: Backend> TextDecoder<B> {
     fn ctx_size(&self) -> usize {
         self.n_text_ctx
     }
+}
+
+// def sinusoids(length, channels, max_timescale=10000):
+//     """Returns sinusoids for positional embedding"""
+//     assert channels % 2 == 0
+//     log_timescale_increment = np.log(max_timescale) / (channels // 2 - 1)
+//     inv_timescales = torch.exp(-log_timescale_increment * torch.arange(channels // 2))
+//     scaled_time = torch.arange(length)[:, np.newaxis] * inv_timescales[np.newaxis, :]
+//     return torch.cat([torch.sin(scaled_time), torch.cos(scaled_time)], dim=1)
+//
+
+fn sinusoids<B: Backend>(length: usize, channels: usize, device: &B::Device) -> Tensor<B, 2> {
+    assert_eq!(channels % 2, 0, "");
+    let max_timescale = 10000.0;
+    let log_timescale_increment = f32::ln(max_timescale) / ((channels / 2 - 1) as f32);
+    let inv_timescales = Tensor::exp(
+        Tensor::arange(0..((channels / 2) as i64), device).float()
+            .mul_scalar(-log_timescale_increment)
+    );
+    let scaled_time =
+        Tensor::arange(0..(length as i64), device).reshape([length, 1]).float()
+            .matmul(inv_timescales.reshape([1, channels / 2]));
+    return Tensor::cat(vec![scaled_time.clone().sin(), scaled_time.cos()], 1);
 }
 
 #[derive(Config, Debug)]
@@ -188,10 +215,7 @@ impl AudioEncoderConfig {
             })
             .collect();
         let ln_post = nn::LayerNormConfig::new(self.n_audio_state).init(device);
-        let positional_embedding = Tensor::random(
-            [self.n_audio_ctx, self.n_audio_state],
-            Distribution::Normal(0.0, 1.0),
-            device);
+        let positional_embedding = sinusoids(self.n_audio_ctx, self.n_audio_state, device);
         let n_mels = self.n_mels;
         let n_audio_ctx = self.n_audio_ctx;
 
@@ -222,11 +246,7 @@ impl<B: Backend> AudioEncoder<B> {
     fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
         let [_, n_mels, n_ctx] = x.dims();
 
-        assert!(
-            n_mels == self.n_mels,
-            "Audio mel spectrum size must be {}.",
-            self.n_mels
-        );
+        assert_eq!(n_mels, self.n_mels, "Audio mel spectrum size must be {}.", self.n_mels);
         // assert!(
         //     n_ctx <= self.n_audio_ctx,
         //     "Audio length {} cannot exceed {}.",
@@ -236,14 +256,14 @@ impl<B: Backend> AudioEncoder<B> {
 
         let x = nn::Gelu::new().forward(self.conv1.forward(x));
         let x = nn::Gelu::new().forward(self.conv2.forward(x));
+        let x = x.permute([0, 2, 1]);
 
-        let x = x.swap_dims(1, 2);
-        let k = x.dims()[1];
+        let k = x.dims()[0];
         let x = x + self
             .positional_embedding
             .clone()
-            .slice([0..k])
-            .unsqueeze::<3>();
+            .unsqueeze::<3>()
+            .repeat(0, k);
 
         let mut x = x;
         for block in &self.blocks {
@@ -270,7 +290,6 @@ impl ResidualEncoderAttentionBlockConfig {
         let attn_ln = nn::LayerNormConfig::new(self.n_state).init(device);
 
         let mlp0 = nn::LinearConfig::new(self.n_state, 4 * self.n_state).init(device);
-        let gelu = nn::Gelu::new();
         let mlp2 = nn::LinearConfig::new(4 * self.n_state, self.n_state).init(device);
 
         let mlp_ln = nn::LayerNormConfig::new(self.n_state).init(device);
@@ -296,15 +315,19 @@ pub struct ResidualEncoderAttentionBlock<B: Backend> {
 
 impl<B: Backend> ResidualEncoderAttentionBlock<B> {
     fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
-        let x = x.clone() + self.attn.forward(self.attn_ln.forward(x), None);
+        let batch = x.dims()[0];
+        let x = x.clone() +
+            self.attn.forward(self.attn_ln.forward(x), None)
+                .slice([0..1])
+                .repeat(0, batch);
 
         let z = self.mlp_ln.forward(x.clone());
-        let z = self.mlp0.forward(z);
-        let gelu=  nn::Gelu::new();
-        let z = gelu.forward(z);
-        let z= self.mlp2.forward(z);
 
-        let x = x.clone() + z;
+        let z = self.mlp0.forward(z);
+        let z = nn::Gelu::new().forward(z);
+        let z = self.mlp2.forward(z);
+
+        let x = x + z;
         return x;
     }
 }
@@ -354,62 +377,26 @@ pub struct ResidualDecoderAttentionBlock<B: Backend> {
 
 impl<B: Backend> ResidualDecoderAttentionBlock<B> {
     fn forward(&self, x: Tensor<B, 3>, xa: Tensor<B, 3>, mask: &Tensor<B, 2>) -> Tensor<B, 3> {
-        let x = x.clone() + self.attn.forward(self.attn_ln.forward(x), Some(mask));
-        let x = x.clone() + self.cross_attn.forward(self.cross_attn_ln.forward(x), xa);
+        let batch = x.dims()[0];
+        let x = x.clone()
+            + self.attn.forward(self.attn_ln.forward(x), Some(mask))
+            .slice([0..1])
+            .repeat(0, batch);
+        let x = x.clone()
+            + self.cross_attn.forward(self.cross_attn_ln.forward(x), xa)
+            .slice([0..1])
+            .repeat(0, batch);
 
         let z = self.mlp_ln.forward(x.clone());
-        let z = self.mlp0.forward(z);
-        let gelu=  nn::Gelu::new();
-        let z = gelu.forward(z);
-        let z= self.mlp2.forward(z);
 
-        let x = x.clone() + z;
+        let z = self.mlp0.forward(z);
+        let z = nn::Gelu::new().forward(z);
+        let z = self.mlp2.forward(z);
+
+        let x = x + z;
         return x;
     }
 }
-
-// todo: waiting burn to support nn::sequential
-// #[derive(Module, Debug)]
-// enum MLPSequentialType<B: Backend> {
-//     Lin(nn::Linear<B>),
-//     Gelu(nn::Gelu)
-// }
-// Gelu
-// #[derive(Module)]
-// struct MLP{
-//     mlp0:
-// }
-
-// #[derive(Config)]
-// pub struct MLPConfig {
-//     n_state: usize,
-// }
-//
-// impl MLPConfig {
-//     pub fn init<B: Backend>(&self, device: &B::Device) -> MLP<B> {
-//         let lin1 = nn::LinearConfig::new(self.n_state, 4 * self.n_state).init(device);
-//         let lin2 = nn::LinearConfig::new(4 * self.n_state, self.n_state).init(device);
-//
-//         MLP { lin1,  lin2 }
-//     }
-// }
-
-#[derive(Module, Debug)]
-pub struct MLP<B: Backend> {
-    lin1: nn::Linear<B>,
-    gelu: nn::Gelu,
-    lin2: nn::Linear<B>,
-}
-
-// impl<B: Backend> MLP<B> {
-//     pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
-//         let x = self.lin1.forward(x);
-//         let x = nn::Gelu::new().forward(x);
-//         let x = self.lin2.forward(x);
-//
-//         return x;
-//     }
-// }
 
 #[derive(Config)]
 pub struct MultiHeadSelfAttentionConfig {
@@ -534,16 +521,15 @@ pub fn qkv_attention<B: Backend>(
 
     let q = q
         .reshape([n_batch, n_qctx, n_head, n_hstate])
-        .swap_dims(1, 2)
+        .permute([0, 2, 1, 3])
         * scale;
     let k = k
         .reshape([n_batch, n_ctx, n_head, n_hstate])
-        .swap_dims(1, 2)
-        .transpose()
+        .permute([0, 2, 3, 1])
         * scale;
     let v = v
         .reshape([n_batch, n_ctx, n_head, n_hstate])
-        .swap_dims(1, 2);
+        .permute([0, 2, 1, 3]);
 
     let qk = q.matmul(k);
 
@@ -556,7 +542,7 @@ pub fn qkv_attention<B: Backend>(
 
     // normalize value weightings
     let w = softmax(qk, 3);
-    let o = w.matmul(v).swap_dims(1, 2).flatten(2, 3);
+    let o = w.matmul(v).permute([0, 2, 1, 3]).flatten(2, 3);
 
     return o;
 }
@@ -572,4 +558,29 @@ pub fn attn_decoder_mask<B: Backend>(seq_length: usize, device: &Device<B>) -> T
     }
 
     return mask;
+}
+
+
+#[cfg(test)]
+mod test {
+    use burn::prelude::Tensor;
+
+    #[test]
+    fn test_triu() {
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "wgpu-backend")] {
+                type CurBackend = burn_wgpu::Wgpu<burn_wgpu::AutoGraphicsApi, f32, i32>;
+                let device = burn_wgpu::WgpuDevice::BestAvailable;
+            } else if #[cfg(feature = "torch-backend")] {
+                type CurBackend = LibTorch<f32>;
+                let device = LibTorchDevice::Cuda(0);
+            }
+        }
+        let mask = Tensor::<CurBackend, 2>::full(
+            [10, 8],
+            f32::NEG_INFINITY,
+            &device,
+        ).triu(1);
+        println!("{mask}");
+    }
 }

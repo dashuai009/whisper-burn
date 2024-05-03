@@ -1,6 +1,6 @@
 use burn::tensor::backend::Backend;
 
-use burn::tensor::Tensor;
+use burn::tensor::{Bool, Tensor};
 use num_traits::Zero;
 use reqwest::{self, IntoUrl};
 
@@ -23,7 +23,7 @@ async fn download_from_url_to_file<
     url: T,
     load_file_path: P,
 ) -> Result<(), reqwest::Error> {
-    println!("download fomr [{url:?}] \n\t to {load_file_path:?}");
+    println!("download from [{url:?}] \n\t to {load_file_path:?}");
     let response = reqwest::get(url).await?;
     // 分离文件路径和文件名
     let perfix = load_file_path.as_ref().parent().unwrap();
@@ -38,37 +38,27 @@ async fn download_from_url_to_file<
     return Ok(());
 }
 
+/// 模型种类。
+/// 目前一共11种模型+2种distil出品的加速推理的模型
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WhichModel {
     Tiny,
-
     // #[value(name = "tiny.en")]
     TinyEn,
-
     Base,
-
     // #[value(name = "base.en")]
     BaseEn,
-
     Small,
-
     // #[value(name = "small.en")]
     SmallEn,
-
     Medium,
-
     // #[value(name = "medium.en")]
     MediumEn,
-
     LargeV1,
-
     LargeV2,
-
     LargeV3,
-
     // #[value(name = "distil-medium.en")]
     DistilMediumEn,
-
     // #[value(name = "distil-large-v2")]
     DistilLargeV2,
 }
@@ -97,18 +87,18 @@ impl WhichModel {
         // 目标本地路径
         let local_path = dir.as_ref().join(self.model_local_path());
         if !local_path.exists() {
-            let url =  match self{
+            let url = match self {
                 Self::TinyEn => "https://openaipublic.azureedge.net/main/whisper/models/d3dd57d32accea0b295c96e26691aa14d8822fac7d9d27d5dc00b4ca2826dd03/tiny.en.pt",
-                Self::Tiny=> r"https://openaipublic.azureedge.net/main/whisper/models/65147644a518d12f04e32d6f3b26facc3f8dd46e5390956a9424a650c0ce22b9/tiny.pt",
-                Self::BaseEn=> r"https://openaipublic.azureedge.net/main/whisper/models/25a8566e1d0c1e2231d1c762132cd20e0f96a85d16145c3a00adf5d1ac670ead/base.en.pt",
-                Self::Base=> r"https://openaipublic.azureedge.net/main/whisper/models/ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e/base.pt",
-                Self::SmallEn=> r"https://openaipublic.azureedge.net/main/whisper/models/f953ad0fd29cacd07d5a9eda5624af0f6bcf2258be67c92b79389873d91e0872/small.en.pt",
-                Self::Small=> r"https://openaipublic.azureedge.net/main/whisper/models/9ecf779972d90ba49c06d968637d720dd632c55bbf19d441fb42bf17a411e794/small.pt",
-                Self::MediumEn=> r"https://openaipublic.azureedge.net/main/whisper/models/d7440d1dc186f76616474e0ff0b3b6b879abc9d1a4926b7adfa41db2d497ab4f/medium.en.pt",
-                Self::Medium=> r"https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1/medium.pt",
-                Self::LargeV1=> r"https://openaipublic.azureedge.net/main/whisper/models/e4b87e7e0bf463eb8e6956e646f1e277e901512310def2c24bf0e11bd3c28e9a/large-v1.pt",
-                Self::LargeV2=> r"https://openaipublic.azureedge.net/main/whisper/models/81f7c96c852ee8fc832187b0132e569d6c3065a3252ed18e56effd0b6a73e524/large-v2.pt",
-                Self::LargeV3=> r"https://openaipublic.azureedge.net/main/whisper/models/e5b1a55b89c1367dacf97e3e19bfd829a01529dbfdeefa8caeb59b3f1b81dadb/large-v3.pt",
+                Self::Tiny => r"https://openaipublic.azureedge.net/main/whisper/models/65147644a518d12f04e32d6f3b26facc3f8dd46e5390956a9424a650c0ce22b9/tiny.pt",
+                Self::BaseEn => r"https://openaipublic.azureedge.net/main/whisper/models/25a8566e1d0c1e2231d1c762132cd20e0f96a85d16145c3a00adf5d1ac670ead/base.en.pt",
+                Self::Base => r"https://openaipublic.azureedge.net/main/whisper/models/ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e/base.pt",
+                Self::SmallEn => r"https://openaipublic.azureedge.net/main/whisper/models/f953ad0fd29cacd07d5a9eda5624af0f6bcf2258be67c92b79389873d91e0872/small.en.pt",
+                Self::Small => r"https://openaipublic.azureedge.net/main/whisper/models/9ecf779972d90ba49c06d968637d720dd632c55bbf19d441fb42bf17a411e794/small.pt",
+                Self::MediumEn => r"https://openaipublic.azureedge.net/main/whisper/models/d7440d1dc186f76616474e0ff0b3b6b879abc9d1a4926b7adfa41db2d497ab4f/medium.en.pt",
+                Self::Medium => r"https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1/medium.pt",
+                Self::LargeV1 => r"https://openaipublic.azureedge.net/main/whisper/models/e4b87e7e0bf463eb8e6956e646f1e277e901512310def2c24bf0e11bd3c28e9a/large-v1.pt",
+                Self::LargeV2 => r"https://openaipublic.azureedge.net/main/whisper/models/81f7c96c852ee8fc832187b0132e569d6c3065a3252ed18e56effd0b6a73e524/large-v2.pt",
+                Self::LargeV3 => r"https://openaipublic.azureedge.net/main/whisper/models/e5b1a55b89c1367dacf97e3e19bfd829a01529dbfdeefa8caeb59b3f1b81dadb/large-v3.pt",
                 Self::DistilLargeV2 | Self::DistilMediumEn => todo!()
             };
             download_from_url_to_file(url, local_path).await?;
@@ -193,17 +183,18 @@ impl<B: Backend> WhisperHelper<B> {
         let load_args = burn_import::pytorch::LoadArgs::new(
             model_dir.join(model_kind.model_local_path()).into(),
         )
-        .with_debug_print()
-        .with_key_remap("mlp.0", "mlp0")
-        .with_key_remap("mlp.2", "mlp2")
-        .with_top_level_key("model_state_dict");
+            .with_debug_print()
+            .with_key_remap("mlp.0", "mlp0")
+            .with_key_remap("mlp.2", "mlp2")
+            .with_top_level_key("model_state_dict");
         let model =
             burn_import::pytorch::PyTorchFileRecorder::<burn::record::HalfPrecisionSettings>::new()
                 .load(load_args, device)
                 .map(|record| burn::module::Module::load_record(config.init(device), record))
                 .expect("msg");
 
-        let tokenizer = Gpt2Tokenizer::new(model_dir.join(model_kind.tokenizer_json_path())).expect("msg");
+        let tokenizer =
+            Gpt2Tokenizer::new(model_dir.join(model_kind.tokenizer_json_path())).expect("msg");
 
         Self {
             config,
@@ -215,33 +206,32 @@ impl<B: Backend> WhisperHelper<B> {
 
     /// Returns the token id for the selected language.
 
+    /// Detect the spoken language in the audio, and return them as list of strings, along with the ids
+    /// of the most probable language tokens and the probability distribution over all language tokens.
+    /// This is performed outside the main decode loop in order to not interfere with kv-caching.
     pub fn detect_language(&self, mel: &Tensor<B, 3>) -> (Language, f32) {
         if !self.kind.is_multilingual() {
             return (Language::English, 1.0f32);
         }
-        let mel = whisper::audio::pad_or_trim(mel, whisper::audio::N_FRAMES);
-        let [_bsize, _, seq_len] = mel.dims();
+        // let mel = whisper::audio::pad_or_trim(mel, whisper::audio::N_FRAMES);
+        let [n_audio, _, _seq_len] = mel.dims();
         println!("before mel dims = {:?}", mel.dims());
+        println!("before mel[0:10, 0: 10] = {:?}", mel.clone().slice([0..1, 0..10, 0..10]).to_data());
+
+        // mel = model.encoder(mel)
         let mel = self.model.forward_encoder(mel.clone());
         println!("after mel dims = {:?}", mel.dims());
-
-        // let mel = mel.clone().narrow(
-        //     2,
-        //     0,
-        //     usize::min(seq_len, model.config().max_source_positions),
-        // )?;
-
         let device = &mel.device();
-
+        println!("mel[0:10, 0: 10] = {:?}", mel.clone().slice([0..1, 0..10, 0..10]).to_data());
         println!("vocab_size = {}", self.tokenizer.vocab_size());
         let language_token_ids = whisper::token::LANGUAGES
             .iter()
             .map(|t| {
-                // println!("{t}");
-
-                self.tokenizer
+                let id = self.tokenizer
                     .special_token(SpecialToken::Language(Language::from_str(t).unwrap()))
-                    .unwrap()
+                    .unwrap();
+                println!("id = {id}; token = {t}");
+                id
             })
             .collect::<Vec<_>>();
 
@@ -249,40 +239,75 @@ impl<B: Backend> WhisperHelper<B> {
             .tokenizer
             .special_token(SpecialToken::StartofTranscript)
             .unwrap();
-
-        let n_audio = mel.dims()[0];
-
+        println!("sot = {sot_token}");
+        // n_audio = mel.shape[0]
+        // let n_audio = mel.dims()[0];
+        // x = torch.tensor([[tokenizer.sot]] * n_audio).to(mel.device)  # [n_audio, 1]
         let x = Tensor::<B, 2, burn::tensor::Int>::full([n_audio, 1], sot_token as i32, device);
-
+        // logits = model.logits(x, mel)[:, 0]
         let logits = self.model.forward_decoder(x, mel);
-
-        //
+        println!("logtis = {:?}", logits);
+        let logits_dims = logits.dims();
+        let logits = logits.slice([0..logits_dims[0], 0..1]).reshape([logits_dims[0], logits_dims[2]]);
 
         let logits_dims = logits.dims();
-
         println!("logits_dims = {logits_dims:?}");
 
-        let mask = Tensor::<B, 1>::ones([logits_dims[2]], device);
+        let logits_dims_last =*logits_dims.last().unwrap();
+        // # collect detected languages; suppress all non-language tokens
+        // mask = torch.ones(logits.shape[-1], dtype=torch.bool)
+        let mut mask_base = vec![true; logits_dims_last];
 
+        // mask[list(tokenizer.all_language_tokens)] = False
+        println!("all_lang_tok = {language_token_ids:?}");
         for l_token_id in language_token_ids {
-            mask.to_data().value[l_token_id] = B::FloatElem::zero();
+            mask_base[l_token_id] = false;
         }
+        let mask = Tensor::<B, 2, Bool>::from_data(
+            burn::tensor::Data::new(mask_base, [1 , logits_dims_last].into()),
+            &device
+        );
 
+        // logits[:, mask] = -np.inf
         let mask = mask
-            .unsqueeze::<2>()
-            .repeat(0, logits_dims[0] * logits_dims[1])
+            .repeat(0, logits_dims[0])
             .reshape(logits_dims);
-
         println!("mask dims = {:?}", mask.dims());
-        let mask = mask.equal(Tensor::<B, 3>::ones(logits_dims, device));
-        let logits = logits.mask_fill(mask, -f32::INFINITY);
-        println!("after mask logits dims = {:?}", logits.dims());
-        let language_tokens = logits.clone().argmax(2); // language_tokens = logits.argmax(dim=-1)
+        let logits = logits.mask_fill(mask.clone(), -f32::INFINITY);
+        println!("maks = {:?} {:?}", mask.dims(), mask.clone().slice([0..1, 50250..50380]).to_data());
+        println!("after mask logits dims = {:?} {:?}", logits.dims(), logits.clone().slice([0..1, 50250..50380]).to_data());
+
+        // language_tokens = logits.argmax(dim=-1)
+        let language_tokens = logits.clone().argmax(1);
         println!("language_tokens = {language_tokens:?}");
-        let language_token_probs = burn::tensor::activation::softmax(logits, 2); // dim= -1
-        let (a, b) = language_token_probs.max_dim_with_indices(2);
-        println!("{:} b = {:?}", a, b);
+        // language_token_probs = logits.softmax(dim=-1).cpu()
+        let language_token_probs = burn::tensor::activation::softmax(logits, 1); // dim= -1
+        println!("language_token_probs = {:#?}\n",  language_token_probs.clone().slice([0..1, 50250..50380]).to_data());
+        let (a, b) = language_token_probs.clone().max_dim_with_indices(1);
+        println!(" a = {:#?}\n b = {:?}", a.to_data(), b.to_data());
 
         return (Language::English, 1.0f32);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use burn_wgpu::{Wgpu, AutoGraphicsApi, WgpuDevice};
+    use crate::whsiper_helper::{WhichModel, WhisperHelper};
+    use tokio;
+
+    #[tokio::test]
+    async fn test_detect_language() {
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "wgpu-backend")] {
+                type CurBackend = Wgpu<AutoGraphicsApi, f32, i32>;
+                let device = WgpuDevice::BestAvailable;
+            } else if #[cfg(feature = "torch-backend")] {
+                type CurBackend = LibTorch<f32>;
+                let device = LibTorchDevice::Cuda(0);
+            }
+        }
+
+        let M: WhisperHelper<CurBackend> = WhisperHelper::new(WhichModel::Base, &device).await;
     }
 }
