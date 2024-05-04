@@ -28,6 +28,10 @@ impl Gpt2Tokenizer {
             .map(|t| t as usize)
     }
 
+    pub fn id_to_token(&self, id: u32) -> Option<String>{
+        self.tokenizer.id_to_token(id)
+    }
+
     pub fn decode(&self, tokens: &[usize], skip_special: bool) -> Result<String> {
         self.tokenizer.decode(
             &tokens.iter().map(|t| *t as u32).collect::<Vec<_>>(),

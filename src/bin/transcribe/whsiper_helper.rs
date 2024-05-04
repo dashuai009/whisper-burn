@@ -1,7 +1,7 @@
 use burn::tensor::backend::Backend;
 
 use burn::tensor::{Bool, Tensor};
-use num_traits::Zero;
+use num_traits::{ToPrimitive, Zero};
 use reqwest::{self, IntoUrl};
 
 use std::fs::File;
@@ -209,29 +209,22 @@ impl<B: Backend> WhisperHelper<B> {
     /// Detect the spoken language in the audio, and return them as list of strings, along with the ids
     /// of the most probable language tokens and the probability distribution over all language tokens.
     /// This is performed outside the main decode loop in order to not interfere with kv-caching.
-    pub fn detect_language(&self, mel: &Tensor<B, 3>) -> (Language, f32) {
+    pub fn detect_language(&self, mel: &Tensor<B, 3>) -> Vec<(Language, f32)> {
         if !self.kind.is_multilingual() {
-            return (Language::English, 1.0f32);
+            return vec![(Language::English, 1.0f32)];
         }
         // let mel = whisper::audio::pad_or_trim(mel, whisper::audio::N_FRAMES);
         let [n_audio, _, _seq_len] = mel.dims();
-        println!("before mel dims = {:?}", mel.dims());
-        println!("before mel[0:10, 0: 10] = {:?}", mel.clone().slice([0..1, 0..10, 0..10]).to_data());
 
         // mel = model.encoder(mel)
         let mel = self.model.forward_encoder(mel.clone());
-        println!("after mel dims = {:?}", mel.dims());
         let device = &mel.device();
-        println!("mel[0:10, 0: 10] = {:?}", mel.clone().slice([0..1, 0..10, 0..10]).to_data());
-        println!("vocab_size = {}", self.tokenizer.vocab_size());
         let language_token_ids = whisper::token::LANGUAGES
             .iter()
             .map(|t| {
-                let id = self.tokenizer
+                self.tokenizer
                     .special_token(SpecialToken::Language(Language::from_str(t).unwrap()))
-                    .unwrap();
-                println!("id = {id}; token = {t}");
-                id
+                    .unwrap()
             })
             .collect::<Vec<_>>();
 
@@ -239,54 +232,49 @@ impl<B: Backend> WhisperHelper<B> {
             .tokenizer
             .special_token(SpecialToken::StartofTranscript)
             .unwrap();
-        println!("sot = {sot_token}");
         // n_audio = mel.shape[0]
         // let n_audio = mel.dims()[0];
         // x = torch.tensor([[tokenizer.sot]] * n_audio).to(mel.device)  # [n_audio, 1]
         let x = Tensor::<B, 2, burn::tensor::Int>::full([n_audio, 1], sot_token as i32, device);
-        // logits = model.logits(x, mel)[:, 0]
         let logits = self.model.forward_decoder(x, mel);
-        println!("logtis = {:?}", logits);
         let logits_dims = logits.dims();
         let logits = logits.slice([0..logits_dims[0], 0..1]).reshape([logits_dims[0], logits_dims[2]]);
-
         let logits_dims = logits.dims();
-        println!("logits_dims = {logits_dims:?}");
 
-        let logits_dims_last =*logits_dims.last().unwrap();
+        let logits_dims_last = *logits_dims.last().unwrap();
         // # collect detected languages; suppress all non-language tokens
         // mask = torch.ones(logits.shape[-1], dtype=torch.bool)
         let mut mask_base = vec![true; logits_dims_last];
 
         // mask[list(tokenizer.all_language_tokens)] = False
-        println!("all_lang_tok = {language_token_ids:?}");
         for l_token_id in language_token_ids {
             mask_base[l_token_id] = false;
         }
         let mask = Tensor::<B, 2, Bool>::from_data(
-            burn::tensor::Data::new(mask_base, [1 , logits_dims_last].into()),
-            &device
+            burn::tensor::Data::new(mask_base, [1, logits_dims_last].into()),
+            &device,
         );
 
         // logits[:, mask] = -np.inf
         let mask = mask
             .repeat(0, logits_dims[0])
             .reshape(logits_dims);
-        println!("mask dims = {:?}", mask.dims());
         let logits = logits.mask_fill(mask.clone(), -f32::INFINITY);
-        println!("maks = {:?} {:?}", mask.dims(), mask.clone().slice([0..1, 50250..50380]).to_data());
-        println!("after mask logits dims = {:?} {:?}", logits.dims(), logits.clone().slice([0..1, 50250..50380]).to_data());
-
         // language_tokens = logits.argmax(dim=-1)
         let language_tokens = logits.clone().argmax(1);
-        println!("language_tokens = {language_tokens:?}");
         // language_token_probs = logits.softmax(dim=-1).cpu()
         let language_token_probs = burn::tensor::activation::softmax(logits, 1); // dim= -1
-        println!("language_token_probs = {:#?}\n",  language_token_probs.clone().slice([0..1, 50250..50380]).to_data());
-        let (a, b) = language_token_probs.clone().max_dim_with_indices(1);
-        println!(" a = {:#?}\n b = {:?}", a.to_data(), b.to_data());
+        let (props, indices) = language_token_probs.clone().max_dim_with_indices(1);
 
-        return (Language::English, 1.0f32);
+        let props = props.into_data();
+        let indices = indices.into_data();
+        let mut res = vec![];
+        for (i,j) in indices.value.into_iter().zip(props.value.into_iter()) {
+            let lang_token = self.tokenizer.id_to_token(i.to_u32().unwrap()).unwrap();
+            let token_len = lang_token.len();
+            res.push((Language::from_str(&lang_token[2..token_len-2]).unwrap(), j.to_f32().unwrap()));
+        }
+        return res;
     }
 }
 

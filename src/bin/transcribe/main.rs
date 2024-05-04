@@ -199,10 +199,8 @@ async fn main() {
         .to_device(&device);
     // Pad 30-seconds of silence to the input audio, for slicing
     let audio = pad_or_trim(&audio, N_SAMPLES);
-    let mel = log_mel_spectrogram::<CurBackend>(audio);
-    println!("mel = {:}", mel);
-    let (a, b) = helper.detect_language(&mel);
-    // println!("detect: {a:?}, props: {b}");
+    let a = helper.detect_language(&mel);
+    println!("res = {a:#?}");
 
     return;
     //
