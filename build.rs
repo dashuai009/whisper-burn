@@ -1,11 +1,11 @@
 extern crate pkg_config;
 fn main() {
-    // println!("cargo:rustc-link-lib=static=snappy");
+    // println!("cargo:rustc-link-lib=static=x265");
     // println!("cargo:rustc-link-search=/opt/homebrew/Cellar/snappy/1.1.10/lib");
     let mut config = pkg_config::Config::new();
     config.statik(true).probe("x264").unwrap();
 
-    // config.statik(true).probe("dav1d").unwrap();
+    config.statik(true).probe("dav1d").unwrap();
     // config.statik(true).probe("aom").unwrap();
     // config.statik(true).probe("opencore-amrwb").unwrap();
     // //

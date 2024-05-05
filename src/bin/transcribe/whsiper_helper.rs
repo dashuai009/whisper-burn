@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use burn::tensor::backend::Backend;
 
-use burn::tensor::{Bool, Tensor};
+use burn::tensor::{Bool, Int, Tensor};
 use num_traits::{ToPrimitive, Zero};
 use reqwest::{self, IntoUrl};
 
@@ -9,12 +10,16 @@ use std::fs::File;
 use std::io::{copy, Write};
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use burn::prelude::{Data, Device};
 
 use whisper::model::{Whisper, WhisperConfig};
 
 use whisper::token::{Gpt2Tokenizer, Language, SpecialToken};
 
 use burn::record::Recorder;
+use whisper::decoding::{DecodingOptions, GreedyDecoder, TokenDecoder};
+use whisper::decoding::logit_filter::{LogitFilter, SuppressBlank};
 
 async fn download_from_url_to_file<
     T: IntoUrl + std::fmt::Debug,
@@ -167,15 +172,57 @@ impl WhichModel {
     }
 }
 
+
+#[derive(Clone)]
+struct BeamSearchToken {
+    token: usize,
+    log_prob: f64,
+}
+
+
+#[derive(Debug)]
+pub struct DecodingResult<B: Backend> {
+    audio_features: Tensor<B, 2>,
+    language: String,
+    language_probs: HashMap<String, f32>,
+    //  Optional[Dict[str, float]] = None
+    tokens: Vec<i32>,
+    text: String,
+    avg_logprob: f32,
+    no_speech_prob: f32,
+    temperature: f32,
+    compression_ratio: f32,
+}
+
+impl<B: Backend> DecodingResult<B> {
+    fn new(device: &Device<B>) -> Self {
+        Self {
+            audio_features: Tensor::<B, 2>::zeros([2, 3], device),
+            language: Default::default(),
+            language_probs: Default::default(),
+            tokens: Default::default(),
+            text: Default::default(),
+            avg_logprob: Default::default(),
+            no_speech_prob: Default::default(),
+            temperature: Default::default(),
+            compression_ratio: Default::default(),
+        }
+    }
+}
+
+
 pub struct WhisperHelper<B: Backend> {
+    // model
     pub config: WhisperConfig,
     pub model: Whisper<B>,
-    pub tokenizer: Gpt2Tokenizer,
+    pub tokenizer: Rc<Gpt2Tokenizer>,
     pub kind: WhichModel,
+    // decode
+    pub decode_options: DecodingOptions,
 }
 
 impl<B: Backend> WhisperHelper<B> {
-    pub async fn new(model_kind: WhichModel, device: &B::Device) -> WhisperHelper<B> {
+    pub async fn new(model_kind: WhichModel, decode_options: DecodingOptions, device: &B::Device) -> WhisperHelper<B> {
         let model_dir = Path::new("./model");
         model_kind.download_to_dir(model_dir).await.expect("msg");
         let config_path = model_dir.join(model_kind.config_path());
@@ -183,7 +230,7 @@ impl<B: Backend> WhisperHelper<B> {
         let load_args = burn_import::pytorch::LoadArgs::new(
             model_dir.join(model_kind.model_local_path()).into(),
         )
-            .with_debug_print()
+            // .with_debug_print()
             .with_key_remap("mlp.0", "mlp0")
             .with_key_remap("mlp.2", "mlp2")
             .with_top_level_key("model_state_dict");
@@ -193,14 +240,16 @@ impl<B: Backend> WhisperHelper<B> {
                 .map(|record| burn::module::Module::load_record(config.init(device), record))
                 .expect("msg");
 
-        let tokenizer =
-            Gpt2Tokenizer::new(model_dir.join(model_kind.tokenizer_json_path())).expect("msg");
+        let tokenizer = Rc::new(
+            Gpt2Tokenizer::new(model_dir.join(model_kind.tokenizer_json_path())).expect("msg")
+        );
 
         Self {
             config,
             model,
             tokenizer,
             kind: model_kind,
+            decode_options,
         }
     }
 
@@ -269,12 +318,275 @@ impl<B: Backend> WhisperHelper<B> {
         let props = props.into_data();
         let indices = indices.into_data();
         let mut res = vec![];
-        for (i,j) in indices.value.into_iter().zip(props.value.into_iter()) {
+        for (i, j) in indices.value.into_iter().zip(props.value.into_iter()) {
             let lang_token = self.tokenizer.id_to_token(i.to_u32().unwrap()).unwrap();
             let token_len = lang_token.len();
-            res.push((Language::from_str(&lang_token[2..token_len-2]).unwrap(), j.to_f32().unwrap()));
+            res.push((Language::from_str(&lang_token[2..token_len - 2]).unwrap(), j.to_f32().unwrap()));
         }
         return res;
+    }
+
+
+    fn init_decoder(&self) -> Box<dyn TokenDecoder<B>> {
+        let eot = self.tokenizer.special_token(SpecialToken::EndofText).unwrap();
+        let decoder: GreedyDecoder<B> = GreedyDecoder::new(self.decode_options.temperature, eot as i32);
+        return Box::new(decoder);
+    }
+
+
+    fn get_initial_tokens(&self) -> Vec<usize> {
+        let transcription_token = self.tokenizer.special_token(SpecialToken::Transcribe).unwrap();
+        let start_of_prev_token = self.tokenizer.special_token(SpecialToken::StartofPrev).unwrap();
+        let lang_token = self.tokenizer.special_token(SpecialToken::Language(Language::Chinese)).unwrap();
+        let first_timestamp_token = self.tokenizer.special_token(SpecialToken::Timestamp(0.0)).unwrap();
+        let notimestamp = self.tokenizer.special_token(SpecialToken::NoTimeStamps).unwrap();
+        let sot_token = self.tokenizer.special_token(SpecialToken::StartofTranscript).unwrap();
+        return vec![sot_token, lang_token, transcription_token, notimestamp];
+    }
+
+
+    pub fn run(&self, mels: Tensor<B, 3>) -> Vec<DecodingResult<B>> {
+        let [n_batch, n_mel, n_ctx] = mels.dims();
+        println!("mel info: n_batch = {n_batch}, n_mel = {n_mel}, n_ctx = {n_ctx}");
+
+        let device = mels.device();
+        let audio_features = self.model.forward_encoder(mels);
+
+        let n_ctx_max_encoder = self.model.encoder_ctx_size();
+        let n_ctx_max_decoder = self.model.decoder_ctx_size();
+
+        let padding = 0;
+        if n_ctx + padding > n_ctx_max_encoder {
+            println!(
+                "Audio has length of {} which exceeds maximum length {}. It will be clipped.",
+                n_ctx + padding,
+                n_ctx_max_encoder
+            );
+        }
+
+        let start_token = self.tokenizer.special_token(SpecialToken::StartofTranscript).unwrap();
+        let transcription_token = self.tokenizer.special_token(SpecialToken::Transcribe).unwrap();
+        let start_of_prev_token = self.tokenizer.special_token(SpecialToken::StartofPrev).unwrap();
+        // let lang_token = self.tokenizer.special_token(SpecialToken::Language(lang)).unwrap();
+        let first_timestamp_token = self.tokenizer.special_token(SpecialToken::Timestamp(0.0)).unwrap();
+        let end_token = self.tokenizer.special_token(SpecialToken::EndofText).unwrap();
+        // let notimestamp = self.tokenizer.special_token(SpecialToken::NoTimeStamps).unwrap();
+        let decoder = self.init_decoder();
+        //
+        // // including the prev tokens causes whisper to hallucinate, repeating itself and failing to determine end of text
+        // /*let mut tokens: Vec<usize> = iter::once(start_of_prev_token)
+        // .chain(prev_normal_tokens.into_iter().cloned())
+        // .chain(iter::once(start_token))
+        // .chain(iter::once(transcription_token))
+        // .chain(iter::once(bpe.special_token(SpecialToken::Timestamp(0.0)).unwrap()))
+        // .collect();*/
+        //
+        let initial_tokens: Vec<i32> = self.get_initial_tokens().into_iter().map(|x| x as i32).collect();
+        let sample_begin = initial_tokens.len();
+
+
+        let mut logit_filters = Vec::new();
+        if self.decode_options.suppress_blank {
+            logit_filters.push(Box::new(SuppressBlank::new(self.tokenizer.clone(), sample_begin)));
+        }
+
+
+        let mut tokens: Tensor<B, 2, Int> = Tensor::from_ints(
+            &*initial_tokens,
+            &device,
+        ).reshape([1, sample_begin]).repeat(0, n_batch);
+
+        println!("initial_tokens = {tokens}");
+
+        let mut sum_logprobs = Tensor::<B, 2>::zeros([n_batch, 1], &device);
+        let no_speech_probs = Tensor::<B, 2>::full([n_batch, 1], f32::INFINITY, &device);
+        for i in 0..self.decode_options.sample_len.unwrap_or(0) {
+            let logits = self.model.forward_decoder(tokens.clone(), audio_features.clone());
+            if i == 0 && self.tokenizer.special_token(SpecialToken::NoSpeech).is_some() {
+                // save no_speech_probs
+                // no_speech_probs
+            }
+            let [n_audio, n_group, vol_size] = logits.dims();
+            let mut logits = logits.slice([0..n_batch, (n_group - 1)..n_group]).reshape([n_audio, vol_size]);
+
+            for filter in &logit_filters {
+                logits = filter.apply(logits, &tokens);
+            }
+            let (next_tokens, completed) = decoder.update(tokens, logits, &mut sum_logprobs);
+            println!("next_tokens = {next_tokens}, completed = {completed}");
+            tokens = next_tokens;
+        }
+
+        //
+        // type BeamNode = beam::BeamNode<BeamSearchToken>;
+        //
+        // let initial_tokens = BeamNode {
+        //     seq: initial_tokens,
+        //     log_prob: 0.0,
+        // };
+        //
+        // let encoder_output = whisper.forward_encoder(mels);
+        //
+        // let neg_infty = -f32::INFINITY;
+        // /*let mut nonspecial_mask: Vec<f32> = (0..bpe.vocab_size()).into_iter().map(|tok| /*if bpe.is_special(tok) {neg_infty} else {0.0}*/ 0.0).collect();
+        // //nonspecial_mask[end_token] = neg_infty;
+        // let nonspecial_mask = Tensor::from_floats(Data::new(
+        //     nonspecial_mask,
+        //     [bpe.vocab_size()].into(),
+        // )).to_device(&device);*/
+        //
+        // let beam_size = 5;
+        // let max_depth = 100;
+        //
+        // let beamsearch_is_finished = |toks: &[BeamSearchToken]| {
+        //     if let Some(btok) = toks.last() {
+        //         btok.token == end_token
+        //     } else {
+        //         false
+        //     }
+        // };
+        //
+        // let vocab_size = bpe.vocab_size();
+        // let mut special_tokens_maskout: Vec<f32> = (0..vocab_size).into_iter().map(|token| if bpe.is_special(token) { neg_infty } else { 0.0 }).collect();
+        // //special_tokens_maskout[end_token] = 1.0;
+        //
+        // let special_tokens_maskout = Tensor::from_data(Data::new(
+        //     special_tokens_maskout,
+        //     [vocab_size].into(),
+        // ).convert(), &device)
+        //     .to_device(&device);
+        //
+        // let beamsearch_next = |beams: &[BeamNode]| {
+        //     // convert tokens into tensor
+        //     let max_seq_len = beams.iter().map(|beam| beam.seq.len()).max().unwrap_or(0);
+        //     let flattened_tokens: Vec<_> = beams
+        //         .iter()
+        //         .flat_map(|beam| {
+        //             let additional_tokens = max_seq_len - beam.seq.len();
+        //             beam.seq.iter().map(|btok| btok.token).chain(iter::once(0).cycle().take(additional_tokens))
+        //         })
+        //         .collect();
+        //
+        //     let token_tensor = Tensor::from_ints(Data::from_usize(Data::new(
+        //         flattened_tokens,
+        //         [beams.len(), max_seq_len].into(),
+        //     )), &device)
+        //         .to_device(&device);
+        //
+        //     let logits = self.model.forward_decoder(token_tensor, encoder_output.clone().repeat(0, beams.len()));
+        //     let logits = if max_seq_len > 5 {
+        //         logits
+        //     } else {
+        //         logits + special_tokens_maskout.clone().unsqueeze().slice([0..1, 0..1, 0..51864])
+        //     };
+        //     let log_probs = log_softmax(logits, 2);
+        //
+        //     let [n_batch, n_token, n_dict] = log_probs.dims();
+        //     let beam_log_probs = beams.iter().enumerate().map(|(i, beam)| {
+        //         let batch = i;
+        //         let token_index = beam.seq.len() - 1;
+        //
+        //         log_probs.clone().slice([batch..batch + 1, token_index..token_index + 1]).flatten::<1>(0, 2).into_data().value
+        //     });
+        //
+        //     let continuations = beam_log_probs
+        //         .zip(beams)
+        //         .map(|(log_probs, beam)| {
+        //             log_probs
+        //                 .into_iter()
+        //                 .map(|log_prob| log_prob.elem::<f64>())
+        //                 .enumerate()
+        //                 .map(|(token_id, log_prob)| {
+        //                     (
+        //                         BeamSearchToken {
+        //                             token: token_id,
+        //                             log_prob: log_prob,
+        //                         },
+        //                         beam.log_prob + log_prob,
+        //                     )
+        //                 }
+        //                 )
+        //                 .collect()
+        //         }).collect();
+        //
+        //     continuations
+        // };
+        //
+        // let tokens: Vec<_> = beam::beam_search(vec![initial_tokens], beamsearch_next, beamsearch_is_finished, beam_size, max_depth)
+        //     .into_iter()
+        //     .map(|btok| btok.token)
+        //     .collect();
+        //
+        // /*let mut tokens: Vec<_> = [start_token, lang_token, transcription_token, notimestamp].to_vec();
+        //
+        // loop {
+        //     if tokens.len() >= n_ctx_max_decoder {
+        //         tokens.push(end_token);
+        //         break;
+        //     }
+        //
+        //     let token_tensor = Tensor::from_ints(Data::from_usize(Data::new(
+        //         tokens.clone(),
+        //         [tokens.len()].into(),
+        //     )))
+        //     .unsqueeze::<2>()
+        //     .to_device(&device);
+        //
+        //     let out = whisper.forward_decoder(token_tensor, encoder_output.clone());
+        //
+        //     let [n_batch, n_token, n_dict] = out.dims();
+        //     let last_row: Tensor<B, 1> = out.slice([0..1, (n_token - 1)..n_token]).flatten(0, 2);
+        //
+        //     let token_id = last_row.clone().argmax(0).into_scalar().to_usize().unwrap();
+        //     let token_logit = last_row
+        //         .clone()
+        //         .slice([token_id..(token_id + 1)])
+        //         .into_scalar()
+        //         .to_f64()
+        //         .unwrap();
+        //     let eot_logit = last_row
+        //         .slice([end_token..(end_token + 1)])
+        //         .into_scalar()
+        //         .to_f64()
+        //         .unwrap();
+        //
+        //     tokens.push(token_id);
+        //     //println!("{}", bpe.decode(&[token_id], false)?);
+        //
+        //     // if end of text confidence is great enough then stop
+        //     if (eot_logit - token_logit).exp() > 0.5 {
+        //         if token_id != end_token {
+        //             tokens.push(end_token);
+        //         }
+        //         break;
+        //     }
+        //
+        //     let repeat_window_size = 5;
+        //     let min_n_repeats = 4; // three times to charm, four to scorn
+        //     /*println!("{}", bpe.decode(&tokens[..], false).unwrap());
+        //     if let Some(period) = repetition_period(&tokens[..], min_n_repeats) {
+        //         println!("period = {}", period);
+        //         let end = first_repetition_end(&tokens[..], period);
+        //
+        //         tokens.truncate(end);
+        //         tokens.push(end_token);
+        //         break;
+        //     }*/
+        //     if let Some( (index_of_first_repeat, end) ) =
+        //         find_repeated_tokens_index(&tokens[..], repeat_window_size, min_n_repeats)
+        //     {
+        //         //let end = index_of_first_repeat + repeat_window_size;
+        //
+        //         tokens.truncate(end);
+        //         tokens.push(end_token);
+        //         break;
+        //     }
+        // }*/
+        //
+        // let text = bpe.decode(&tokens[..], true)?;
+        //
+        // return Ok((text, tokens));
+        vec![]
     }
 }
 

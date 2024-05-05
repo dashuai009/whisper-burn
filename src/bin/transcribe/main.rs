@@ -1,6 +1,10 @@
+#[cfg(feature = "ffmpeg-input")]
+extern crate ffmpeg_next;
+
 mod lib;
 mod whsiper_helper;
 
+use std::process;
 use whisper::model::*;
 use whisper::transcribe::waveform_to_text;
 
@@ -14,7 +18,7 @@ use burn::record::{HalfPrecisionSettings, Recorder, RecorderError};
 use ffmpeg::{frame, media};
 #[cfg(feature = "ffmpeg-input")]
 use ffmpeg_next as ffmpeg;
-use std::{clone, slice};
+
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "wgpu-backend")] {
@@ -27,6 +31,7 @@ cfg_if::cfg_if! {
 use burn::{config::Config, module::Module, tensor::backend::Backend};
 use burn_import::pytorch::{LoadArgs, PyTorchFileRecorder};
 
+#[cfg(feature = "bound-input")]
 use hound::{self, SampleFormat};
 
 /// 从音视频文件中提取音频数据
@@ -64,27 +69,24 @@ pub fn load_audio_waveform_with_ffmpeg(input_file: &str) -> Result<Vec<f32>, ffm
     unsafe {
         //  Guessed Channel Layout: mono
         let par = input_audio_stream.parameters().as_mut_ptr();
-        if (*par).channel_layout == 0 {
-            (*par).channel_layout = ffmpeg::util::channel_layout::ChannelLayout::MONO.bits()
-        };
+        let x = (*par).ch_layout;
+
+        // (*par).get
+        // ffmpeg::ffi::av_c
+        println!("channel = {:?} nb_channel {:?}", x.order, x.nb_channels);
+
+        // if (*par).ch_layout. == 0 {
+        //     (*par).ch_layout = ffmpeg::util::channel_layout::ChannelLayout::MONO.bits()
+        // };
     }
 
     let mut decoder = context.decoder().audio()?;
     decoder.set_parameters(input_audio_stream.parameters())?;
 
-    let src_format = decoder.format();
-    let src_rate = decoder.rate();
-    let src_channel_layout = decoder.channel_layout();
-
-    let dst_rate = 16000u32;
-    let mut swr = ffmpeg::software::resampling::Context::get(
-        src_format,
-        src_channel_layout,
-        src_rate,
-        ffmpeg::util::format::Sample::F32(ffmpeg::util::format::sample::Type::Packed), // AV_SAMPLE_FMT_FLT
-        ffmpeg::util::channel_layout::ChannelLayout::MONO,
-        dst_rate,
-    )?;
+    // let src_format = decoder.format();
+    // let src_rate = decoder.rate();
+    // let src_channel_layout = decoder.channel_layout();
+    //
 
     let mut frame = frame::Audio::empty();
     let mut res = vec![];
@@ -95,10 +97,37 @@ pub fn load_audio_waveform_with_ffmpeg(input_file: &str) -> Result<Vec<f32>, ffm
         decoder.send_packet(&packet)?;
         while decoder.receive_frame(&mut frame).is_ok() {
             let mut out_frame = frame::Audio::empty();
-            let _resample_res = swr.run(&frame, &mut out_frame)?;
+            {
+                let src_format = frame.format();
+                // unsafe {
+                //     let s = (*frame.as_ptr()).format;
+                //     println!("frame format = {s:?}");
+                // }
+                let src_rate = frame.rate();
+                let src_channel_layout = frame.channel_layout();
+
+                let dst_rate = 16000u32;
+
+                let mut swr = ffmpeg::software::resampling::Context::get(
+                    src_format,
+                    src_channel_layout,
+                    src_rate,
+                    ffmpeg::util::format::Sample::F32(ffmpeg::util::format::sample::Type::Packed), // AV_SAMPLE_FMT_FLT
+                    ffmpeg::util::channel_layout::ChannelLayout::MONO,
+                    dst_rate,
+                )?;
+                let _resample_res = swr.run(&frame, &mut out_frame)?;
+            }
+            // let in_format = frame.format();
+            // unsafe {
+            //     let raw_in = frame.as_mut_ptr();
+            //     let raw_swr = swr.as_mut_ptr();
+            //     // let res = av_channel_layout_compare(&(*raw_in).ch_layout, (*raw_swr).in_ch_layout);
+            //     // println!("av_channel_layout_compare = {res}");
+            // }
             unsafe {
                 let out_frame = out_frame.as_mut_ptr();
-                let tmp_slice = slice::from_raw_parts(
+                let tmp_slice = std::slice::from_raw_parts(
                     (*(*out_frame).extended_data) as *mut f32,
                     (*out_frame).nb_samples as usize,
                 ); // the dst_format in swr is AV_SAMPLE_FMT_FLT, f32
@@ -109,6 +138,7 @@ pub fn load_audio_waveform_with_ffmpeg(input_file: &str) -> Result<Vec<f32>, ffm
     Ok(res)
 }
 
+#[cfg(feature = "hound-input")]
 fn load_audio_waveform(filename: &str) -> hound::Result<(Vec<f32>, usize)> {
     let reader = hound::WavReader::open(filename)?;
     let spec = reader.spec();
@@ -125,8 +155,8 @@ fn load_audio_waveform(filename: &str) -> hound::Result<(Vec<f32>, usize)> {
     let max_int_val = 2_u32.pow(spec.bits_per_sample as u32 - 1) - 1;
 
     let floats = match sample_format {
-        SampleFormat::Float => reader.into_samples::<f32>().collect::<hound::Result<_>>()?,
-        SampleFormat::Int => reader
+        hound::SampleFormat::Float => reader.into_samples::<f32>().collect::<hound::Result<_>>()?,
+        hound::SampleFormat::Int => reader
             .into_samples::<i32>()
             .map(|s| s.map(|s| s as f32 / max_int_val as f32))
             .collect::<hound::Result<_>>()?,
@@ -135,30 +165,15 @@ fn load_audio_waveform(filename: &str) -> hound::Result<(Vec<f32>, usize)> {
     return Ok((floats, sample_rate));
 }
 
-fn load_whisper_model_file<B: Backend>(
-    config: &WhisperConfig,
-    filename: &str,
-    device: &B::Device,
-) -> Result<Whisper<B>, RecorderError> {
-    let full_filename = format!("{filename}.pt");
-    let load_args = LoadArgs::new(full_filename.parse().unwrap())
-        .with_debug_print()
-        .with_key_remap("mlp.0", "mlp0")
-        .with_key_remap("mlp.2", "mlp2")
-        .with_top_level_key("model_state_dict");
-    PyTorchFileRecorder::<HalfPrecisionSettings>::new()
-        .load(load_args, device)
-        .map(|record| config.init(device).load_record(record))
-}
 
-use std::{env, fs, process};
 use burn::prelude::Tensor;
-use whisper::audio::{log_mel_spectrogram, N_FRAMES, N_SAMPLES, pad_or_trim};
+use whisper::audio::{log_mel_spectrogram, N_SAMPLES, pad_or_trim};
+use whisper::decoding::DecodingOptions;
 use crate::whsiper_helper::{WhichModel, WhisperHelper};
 
 #[tokio::main]
 async fn main() {
-    let wav_file = "./audio16k.wav";
+    let wav_file = "./test.m4a";
 
     cfg_if::cfg_if! {
         if #[cfg(feature = "wgpu-backend")] {
@@ -169,16 +184,23 @@ async fn main() {
             let device = LibTorchDevice::Cuda(0);
         }
     }
-    let helper: WhisperHelper<CurBackend> = WhisperHelper::new(WhichModel::Base, &device).await;
     println!("Loading waveform...");
-    let (waveform, _) = match load_audio_waveform(wav_file) {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("Failed to load audio file: {}", e);
-            process::exit(1);
+
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "hound-input")] {
+            let (waveform, _) = match load_audio_waveform(wav_file) {
+                Ok(w) => w,
+                Err(e) => {
+                    eprintln!("Failed to load audio file: {}", e);
+                    process::exit(1);
+                }
+            };
+        } else if #[cfg(feature = "ffmpeg-input")] {
+            let waveform = load_audio_waveform_with_ffmpeg(wav_file).unwrap();
         }
-    };
+    }
     println!("wave len = {}", waveform.len());
+    // return;
 
     // let temperature = vec![];
     let compression_ratio_threshold = Some(2.4_f32);
@@ -189,72 +211,30 @@ async fn main() {
 
     let lang = Language::English;
 
-
-    println!("begin transcribe");
     let input_len = waveform.len();
     let audio = Tensor::<CurBackend, 2>::from_floats(
         burn::tensor::Data::new(waveform, [1, input_len].into()),
         &device,
     )
         .to_device(&device);
+
+    let mut decode_options = DecodingOptions::default();
+    decode_options.sample_len = Some(4);
+
+    println!("======== loading model.........");
+    let start_time = std::time::Instant::now();
+    let helper: WhisperHelper<CurBackend> = WhisperHelper::new(WhichModel::Base, decode_options, &device).await;
+    let loading_time = start_time.elapsed();
+    println!(" cast {:?}", loading_time);
+    println!("======== detecting language...");
     // Pad 30-seconds of silence to the input audio, for slicing
     let audio = pad_or_trim(&audio, N_SAMPLES);
-    let a = helper.detect_language(&mel);
-    println!("res = {a:#?}");
-
+    let mel = log_mel_spectrogram(audio);
+    let detect_result = helper.detect_language(&mel);
+    println!("res = {detect_result:#?}");
+    println!("========= begin run............");
+    let _ = helper.run(mel);
     return;
-    //
-    // let args: Vec<String> = env::args().collect();
-    //
-    // if args.len() < 5 {
-    //     eprintln!(
-    //         "Usage: {} <model name> <audio file> <lang> <transcription file>",
-    //         args[0]
-    //     );
-    //     process::exit(1);
-    // }
-    //
-    // let wav_file = &args[2];
-    // let text_file = &args[4];
-    //
-    // let lang_str = &args[3];
-    // let lang = match Language::iter().find(|lang| lang.as_str() == lang_str) {
-    //     Some(lang) => lang,
-    //     None => {
-    //         eprintln!("Invalid language abbreviation: {}", lang_str);
-    //         process::exit(1);
-    //     }
-    // };
-    //
-    // let model_name = &args[1];
-    //
-    // // let bpe = match Gpt2Tokenizer::new() {
-    // //     Ok(bpe) => bpe,
-    // //     Err(e) => {
-    // //         eprintln!("Failed to load tokenizer: {}", e);
-    // //         process::exit(1);
-    // //     }
-    // // };
-    //
-    // // let whisper_config = match WhisperConfig::load(&format!("{}.cfg", model_name)) {
-    // //     Ok(config) => config,
-    // //     Err(e) => {
-    // //         eprintln!("Failed to load whisper config: {}", e);
-    // //         process::exit(1);
-    // //     }
-    // // };
-    //
-    // // println!("Loading model...");
-    // // let whisper = match load_whisper_model_file::<CurBackend>(&whisper_config, model_name, &device)
-    // // {
-    // //     Ok(whisper_model) => whisper_model,
-    // //     Err(e) => {
-    // //         eprintln!("Failed to load whisper model file: {}", e);
-    // //         process::exit(1);
-    // //     }
-    // // };
-    // let helper: whsiper_helper::WhisperHelper::<CurBackend> = whsiper_helper::WhisperHelper::new(whsiper_helper::WhichModel::Base, &device).await;
-    //
     // let temperature = vec![];
     // let compression_ratio_threshold = Some(2.4_f32);
     // let logprob_threshold = Some(-1.0_f32);

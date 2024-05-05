@@ -1,4 +1,12 @@
+mod token_decoder;
+pub mod logit_filter;
+
+pub use token_decoder::TokenDecoder;
+pub use token_decoder::GreedyDecoder;
+
+
 use std::collections::HashSet;
+use burn::prelude::Backend;
 use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -68,3 +76,4 @@ impl Default for DecodingOptions {
         }
     }
 }
+
