@@ -68,7 +68,7 @@ impl Default for DecodingOptions {
             length_penalty: None,
             prompt: None,
             prefix: None,
-            suppress_tokens: Some(SuppressTokens::Text("-1".to_owned())),
+            suppress_tokens: Some(UserSuppressTokens::Text("-1".to_owned())),
             suppress_blank: true,
             without_timestamps: false,
             max_initial_timestamp: Some(1.0),

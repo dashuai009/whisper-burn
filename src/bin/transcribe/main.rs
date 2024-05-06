@@ -4,9 +4,6 @@ extern crate ffmpeg_next;
 mod lib;
 mod whsiper_helper;
 
-use std::process;
-use whisper::model::*;
-use whisper::transcribe::waveform_to_text;
 
 use strum::IntoEnumIterator;
 

@@ -17,9 +17,9 @@ impl Gpt2Tokenizer {
         Ok(Self { tokenizer })
     }
 
-    pub fn encode(&self, text: &str) -> &[u32] {
+    pub fn encode(&self, text: &str) -> Vec<u32> {
         let tokens = self.tokenizer.encode(text, true).unwrap();
-        tokens.get_ids()
+        tokens.get_ids().to_vec()
     }
 
     pub fn special_token(&self, token: SpecialToken) -> Option<u32> {
@@ -56,24 +56,26 @@ impl Gpt2Tokenizer {
     ///ß
     /// keeping basic punctuations like commas, periods, question marks, exclamation points, etc.
     pub fn non_speech_tokens(&self) -> Vec<u32> {
-        let mut symbols = "\"#()*+/:;<=>@[\\]^_`{|}~「」『』".chars().map(|x| x.to_string().as_str()).collect::<Vec<_>>();
+        let mut symbols = "\"#()*+/:;<=>@[\\]^_`{|}~「」『』"
+            .chars().map(|x| x.to_string()).collect::<Vec<_>>();
         symbols.extend(
-            "<< >> <<< >>> -- --- -( -[ (' (\" (( )) ((( ))) [[ ]] {{ }} ♪♪ ♪♪♪".split(' ').collect::<Vec<_>>()
+            "<< >> <<< >>> -- --- -( -[ (' (\" (( )) ((( ))) [[ ]] {{ }} ♪♪ ♪♪♪"
+                .split(' ').map(|s| s.to_string()).collect::<Vec<_>>()
         );
 
         // # symbols that may be a single token or multiple tokens depending on the tokenizer.
         // # In case they're multiple tokens, suppress the first token, which is safe because:
         // # These are between U+2640 and U+267F miscellaneous symbols that are okay to suppress
         // # in generations, and in the 3-byte UTF-8 representation they share the first two bytes.
-        let miscellaneous = "♩♪♫♬♭♮♯".chars().map(|x| x.to_string().as_str()).collect::<Vec<_>>();
+        let miscellaneous = "♩♪♫♬♭♮♯".chars().map(|x| x.to_string()).collect::<Vec<_>>();
         // assert all(0x2640 <= ord(c) <= 0x267F for c in miscellaneous)
 
         // allow hyphens "-" and single quotes "'" between words, but not at the beginning of a word
         let mut res = vec![self.encode(" -")[0], self.encode(" '")[0]];
         symbols.extend(miscellaneous.clone());
         for sym in symbols {
-            for tokens in [self.encode(sym), self.encode(format!(" {}", sym))] {
-                if tokens.len() == 1 || (miscellaneous.contains(&sym)) {
+            for tokens in [self.encode(&sym), self.encode(&format!(" {}", sym))] {
+                if tokens.len() == 1 || (miscellaneous.contains(&&sym)) {
                     res.push(tokens[0]);
                 }
             }

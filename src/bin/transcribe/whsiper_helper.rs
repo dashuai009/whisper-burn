@@ -8,6 +8,7 @@ use reqwest::{self, IntoUrl};
 use std::fs::File;
 
 use std::io::{copy, Write};
+use std::ops::Index;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -18,7 +19,7 @@ use whisper::model::{Whisper, WhisperConfig};
 use whisper::token::{Gpt2Tokenizer, Language, SpecialToken};
 
 use burn::record::Recorder;
-use whisper::decoding::{DecodingOptions, GreedyDecoder, SuppressTokens, TokenDecoder, UserSuppressTokens};
+use whisper::decoding::{DecodingOptions, GreedyDecoder, UserSuppressTokens, TokenDecoder};
 use whisper::decoding::logit_filter::{LogitFilter, SuppressBlank};
 
 async fn download_from_url_to_file<
@@ -275,7 +276,7 @@ impl<B: Backend> WhisperHelper<B> {
             .map(|t| {
                 self.tokenizer
                     .special_token(SpecialToken::Language(Language::from_str(t).unwrap()))
-                    .unwrap()
+                    .unwrap() as usize
             })
             .collect::<Vec<_>>();
 
@@ -346,12 +347,12 @@ impl<B: Backend> WhisperHelper<B> {
         return vec![sot_token, lang_token, transcription_token, notimestamp];
     }
 
-    fn get_suppress_token(&self) -> Vec<i32>{
-        let mut suppress_token = vec![];
-        if let Some(user_suppress_token) = &self.decode_options.suppress_tokens{
-            let user_tokens = match user_suppress_token{
+    fn get_suppress_token(&self) -> Vec<u32> {
+        let mut suppress_token: Vec<u32> = vec![];
+        if let Some(user_suppress_token) = &self.decode_options.suppress_tokens {
+            let user_tokens = match user_suppress_token {
                 UserSuppressTokens::Text(s) => {
-                    s.split(',').map(|x|{
+                    s.split(',').map(|x| {
                         x.parse::<i32>().unwrap()
                     }).collect::<Vec<_>>()
                 }
@@ -359,13 +360,11 @@ impl<B: Backend> WhisperHelper<B> {
                     s.clone().into_iter().collect()
                 }
             };
-            suppress_token.extend(user_tokens)
+            if user_tokens.contains(&-1) {
+                suppress_token = user_tokens.into_iter().filter(|x| *x >= 0).map(|x| x as u32).collect();
+                suppress_token.extend(self.tokenizer.non_speech_tokens());
+            }
         };
-        if suppress_token.contains(&-1){
-            suppress_token = suppress_token.iter().filter(|x| **x>= 0).collect();
-            suppress_token.extend(self.tokenizer.non_speech_tokens());
-
-        }
         let special_tokens = [
             SpecialToken::Transcribe,
             SpecialToken::Translate,
@@ -374,9 +373,9 @@ impl<B: Backend> WhisperHelper<B> {
             SpecialToken::StartofLM,
             SpecialToken::NoSpeech
         ];
-        for token in special_tokens{
-            if let Some(t) = self.tokenizer.special_token(token){
-                suppress_token.push(t as i32);
+        for token in special_tokens {
+            if let Some(t) = self.tokenizer.special_token(token) {
+                suppress_token.push(t);
             }
         }
         suppress_token.sort();
@@ -385,7 +384,37 @@ impl<B: Backend> WhisperHelper<B> {
 
 
     pub fn run(&self, mels: Tensor<B, 3>) -> Vec<DecodingResult<B>> {
-        let [n_batch, n_mel, n_ctx] = mels.dims();
+        // ====== decoder args ======
+        let n_group = self.decode_options.beam_size.unwrap_or(
+            self.decode_options.best_of.unwrap_or(1)
+        );
+
+        let [n_batch, n_mel, _n_ctx] = mels.dims();
+        let n_ctx = self.model.decoder_ctx_size();
+        let sample_len = self.decode_options.sample_len.unwrap_or(n_ctx / 2);
+        // let sot_sequence
+        let initial_tokens = self.get_initial_tokens();
+        let sample_begin = initial_tokens.len();
+        let sot_token = self.tokenizer.special_token(SpecialToken::StartofTranscript).unwrap();
+        let sot_index = initial_tokens.iter().find(|&&x| x == sot_token).unwrap();
+
+        // let inference
+        // let sequence ranker
+        // todo: beam search
+        let decoder = self.init_decoder();
+
+        /// logit filters: applies various rules to suppress or penalize certain tokens
+        let mut logit_filters: Vec<Box<dyn LogitFilter<B>>> = vec![];
+        if self.decode_options.suppress_blank {
+            logit_filters.push(Box::new(SuppressBlank::new(self.tokenizer.clone(), sample_begin)));
+        }
+        if self.decode_options.suppress_tokens.is_some() {
+            logit_filters.push(Box::new(whisper::decoding::logit_filter::SuppressTokens::new(self.get_suppress_token())));
+        }
+
+
+
+        // ======= decoder args end =
         println!("mel info: n_batch = {n_batch}, n_mel = {n_mel}, n_ctx = {n_ctx}");
 
         let device = mels.device();
@@ -410,7 +439,6 @@ impl<B: Backend> WhisperHelper<B> {
         let first_timestamp_token = self.tokenizer.special_token(SpecialToken::Timestamp(0.0)).unwrap();
         let end_token = self.tokenizer.special_token(SpecialToken::EndofText).unwrap();
         // let notimestamp = self.tokenizer.special_token(SpecialToken::NoTimeStamps).unwrap();
-        let decoder = self.init_decoder();
         //
         // // including the prev tokens causes whisper to hallucinate, repeating itself and failing to determine end of text
         // /*let mut tokens: Vec<usize> = iter::once(start_of_prev_token)
@@ -420,19 +448,9 @@ impl<B: Backend> WhisperHelper<B> {
         // .chain(iter::once(bpe.special_token(SpecialToken::Timestamp(0.0)).unwrap()))
         // .collect();*/
         //
-        let initial_tokens: Vec<i32> = self.get_initial_tokens().into_iter().map(|x| x as i32).collect();
-        let sample_begin = initial_tokens.len();
 
 
-        let mut logit_filters: Vec<Box<dyn LogitFilter<B>>> = vec![];
-        if self.decode_options.suppress_blank {
-            logit_filters.push(Box::new(SuppressBlank::new(self.tokenizer.clone(), sample_begin)));
-        }
-        if self.decode_options.suppress_tokens.is_some(){
-            logit_filters.push(Box::new(whisper::decoding::logit_filter::SuppressTokens::new(self.get_suppress_token())));
-        }
-
-
+        let initial_tokens = initial_tokens.iter().map(|&x| x as i32).collect::<Vec<_>>();
         let mut tokens: Tensor<B, 2, Int> = Tensor::from_ints(
             &*initial_tokens,
             &device,
@@ -442,7 +460,7 @@ impl<B: Backend> WhisperHelper<B> {
 
         let mut sum_logprobs = Tensor::<B, 2>::zeros([n_batch, 1], &device);
         let no_speech_probs = Tensor::<B, 2>::full([n_batch, 1], f32::INFINITY, &device);
-        for i in 0..self.decode_options.sample_len.unwrap_or(0) {
+        for i in 0..sample_len {
             let logits = self.model.forward_decoder(tokens.clone(), audio_features.clone());
             if i == 0 && self.tokenizer.special_token(SpecialToken::NoSpeech).is_some() {
                 // save no_speech_probs

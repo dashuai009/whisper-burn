@@ -40,9 +40,9 @@ impl<B: Backend> LogitFilter<B> for SuppressBlank {
             // Collect indices to suppress (space and EOT)
             let mut suppress_indices = vec![false; vocab_size];
             let  space_idx = self.tokenizer.encode(" ");
-            suppress_indices[space_idx[0]] = true;
+            suppress_indices[space_idx[0] as usize] = true;
 
-            suppress_indices[self.tokenizer.special_token(SpecialToken::EndofText).unwrap()] = true;
+            suppress_indices[self.tokenizer.special_token(SpecialToken::EndofText).unwrap() as usize] = true;
 
             let suppress_indices = Tensor::<B, 2, Bool>::from_data(
                 Data::new(suppress_indices, [1, vocab_size].into()),
@@ -57,11 +57,11 @@ impl<B: Backend> LogitFilter<B> for SuppressBlank {
 
 
 pub struct SuppressTokens{
-    suppress_tokens: Vec<i32>
+    suppress_tokens: Vec<u32>
 }
 
 impl SuppressTokens{
-    pub fn new(suppress_tokens: Vec<i32>) -> SuppressTokens{
+    pub fn new(suppress_tokens: Vec<u32>) -> SuppressTokens{
         SuppressTokens{
             suppress_tokens,
         }
@@ -72,8 +72,8 @@ impl<B:Backend> LogitFilter<B> for SuppressTokens{
         let device = logits.device();
         let [n_batch, vocab_size] = logits.dims();
         let mut suppress_indices = vec![false; vocab_size];
-        for token in self.suppress_tokens{
-            suppress_indices[token] = true;
+        for token in &self.suppress_tokens{
+            suppress_indices[*token as usize] = true;
         }
         let suppress_indices = Tensor::<B, 2, Bool>::from_data(
             Data::new(suppress_indices, [1, vocab_size].into()),
