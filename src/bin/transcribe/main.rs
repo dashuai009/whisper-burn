@@ -168,7 +168,7 @@ fn load_audio_waveform(filename: &str) -> hound::Result<(Vec<f32>, usize)> {
 
 use burn::prelude::Tensor;
 use whisper::audio::{log_mel_spectrogram, N_SAMPLES, pad_or_trim};
-use whisper::decoding::DecodingOptions;
+use whisper::decoding::{DecodingOptions, UserSuppressTokens};
 use crate::whsiper_helper::{WhichModel, WhisperHelper};
 
 #[tokio::main]
@@ -220,6 +220,7 @@ async fn main() {
 
     let mut decode_options = DecodingOptions::default();
     decode_options.sample_len = Some(4);
+    decode_options.suppress_tokens = Some(UserSuppressTokens::Text("-1".to_string()));
 
     println!("======== loading model.........");
     let start_time = std::time::Instant::now();

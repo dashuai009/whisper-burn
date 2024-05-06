@@ -54,3 +54,31 @@ impl<B: Backend> LogitFilter<B> for SuppressBlank {
         };
     }
 }
+
+
+pub struct SuppressTokens{
+    suppress_tokens: Vec<i32>
+}
+
+impl SuppressTokens{
+    pub fn new(suppress_tokens: Vec<i32>) -> SuppressTokens{
+        SuppressTokens{
+            suppress_tokens,
+        }
+    }
+}
+impl<B:Backend> LogitFilter<B> for SuppressTokens{
+    fn apply(&self, logits: Tensor<B, 2>, tokens: &Tensor<B, 2, Int>) -> Tensor<B, 2> {
+        let device = logits.device();
+        let [n_batch, vocab_size] = logits.dims();
+        let mut suppress_indices = vec![false; vocab_size];
+        for token in self.suppress_tokens{
+            suppress_indices[token] = true;
+        }
+        let suppress_indices = Tensor::<B, 2, Bool>::from_data(
+            Data::new(suppress_indices, [1, vocab_size].into()),
+            &device,
+        ).repeat(0, n_batch);
+        logits.mask_fill(suppress_indices, f32::NEG_INFINITY)
+    }
+}

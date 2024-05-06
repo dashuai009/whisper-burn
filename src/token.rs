@@ -17,31 +17,27 @@ impl Gpt2Tokenizer {
         Ok(Self { tokenizer })
     }
 
-    pub fn encode(&self, text: &str) -> Vec<usize> {
+    pub fn encode(&self, text: &str) -> &[u32] {
         let tokens = self.tokenizer.encode(text, true).unwrap();
-        tokens.get_ids().iter().map(|t| *t as usize).collect()
+        tokens.get_ids()
     }
 
-    pub fn special_token(&self, token: SpecialToken) -> Option<usize> {
+    pub fn special_token(&self, token: SpecialToken) -> Option<u32> {
         self.tokenizer
             .token_to_id(&token.to_string())
-            .map(|t| t as usize)
     }
 
-    pub fn id_to_token(&self, id: u32) -> Option<String>{
+    pub fn id_to_token(&self, id: u32) -> Option<String> {
         self.tokenizer.id_to_token(id)
     }
 
-    pub fn decode(&self, tokens: &[usize], skip_special: bool) -> Result<String> {
-        self.tokenizer.decode(
-            &tokens.iter().map(|t| *t as u32).collect::<Vec<_>>(),
-            skip_special,
-        )
+    pub fn decode(&self, tokens: &[u32], skip_special: bool) -> Result<String> {
+        self.tokenizer.decode(&tokens, skip_special)
     }
 
-    pub fn is_special(&self, token: usize) -> bool {
+    pub fn is_special(&self, token: u32) -> bool {
         self.tokenizer
-            .decode(&[token as u32], true)
+            .decode(&[token], true)
             .ok()
             .map(|s| s.is_empty())
             .unwrap_or(false)
@@ -49,6 +45,41 @@ impl Gpt2Tokenizer {
 
     pub fn vocab_size(&self) -> usize {
         self.tokenizer.get_vocab_size(true)
+    }
+
+    ///  Returns the list of tokens to suppress in order to avoid any speaker tags or non-speech
+    ///  annotations, to prevent sampling texts that are not actually spoken in the audio, e.g.
+    ///
+    /// - ♪♪♪
+    /// - ( SPEAKING FOREIGN LANGUAGE )
+    /// - \[DAVID\] Hey there,
+    ///ß
+    /// keeping basic punctuations like commas, periods, question marks, exclamation points, etc.
+    pub fn non_speech_tokens(&self) -> Vec<u32> {
+        let mut symbols = "\"#()*+/:;<=>@[\\]^_`{|}~「」『』".chars().map(|x| x.to_string().as_str()).collect::<Vec<_>>();
+        symbols.extend(
+            "<< >> <<< >>> -- --- -( -[ (' (\" (( )) ((( ))) [[ ]] {{ }} ♪♪ ♪♪♪".split(' ').collect::<Vec<_>>()
+        );
+
+        // # symbols that may be a single token or multiple tokens depending on the tokenizer.
+        // # In case they're multiple tokens, suppress the first token, which is safe because:
+        // # These are between U+2640 and U+267F miscellaneous symbols that are okay to suppress
+        // # in generations, and in the 3-byte UTF-8 representation they share the first two bytes.
+        let miscellaneous = "♩♪♫♬♭♮♯".chars().map(|x| x.to_string().as_str()).collect::<Vec<_>>();
+        // assert all(0x2640 <= ord(c) <= 0x267F for c in miscellaneous)
+
+        // allow hyphens "-" and single quotes "'" between words, but not at the beginning of a word
+        let mut res = vec![self.encode(" -")[0], self.encode(" '")[0]];
+        symbols.extend(miscellaneous.clone());
+        for sym in symbols {
+            for tokens in [self.encode(sym), self.encode(format!(" {}", sym))] {
+                if tokens.len() == 1 || (miscellaneous.contains(&sym)) {
+                    res.push(tokens[0]);
+                }
+            }
+        }
+        res.sort();
+        res
     }
 }
 

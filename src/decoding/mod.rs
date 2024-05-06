@@ -32,7 +32,7 @@ pub struct DecodingOptions {
     pub prefix: Option<Prompt>,     // to prefix the current context
 
     // list of tokens ids to suppress
-    pub suppress_tokens: Option<SuppressTokens>,
+    pub suppress_tokens: Option<UserSuppressTokens>,
     pub suppress_blank: bool,       // this will suppress blank outputs
 
     // timestamp sampling options
@@ -50,7 +50,7 @@ pub enum Prompt {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum SuppressTokens {
+pub enum UserSuppressTokens {
     Text(String),
     Tokens(HashSet<i32>),
 }
