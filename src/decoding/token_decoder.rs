@@ -44,23 +44,21 @@ pub trait TokenDecoder<B: Backend> {
 }
 
 
-pub struct GreedyDecoder<B: Backend> {
+pub struct GreedyDecoder {
     temperature: f32,
-    eot: i32,
-    _phantom_data: PhantomData<B>,
+    eot: i32
 }
 
-impl<B: Backend> GreedyDecoder<B> {
-    pub fn new(temperature: f32, eot: i32) -> GreedyDecoder<B> {
+impl GreedyDecoder {
+    pub fn new(temperature: f32, eot: i32) -> GreedyDecoder {
         GreedyDecoder {
             temperature,
-            eot,
-            _phantom_data: PhantomData::<B>::default(),
+            eot
         }
     }
 }
 
-impl<B: Backend> TokenDecoder<B> for GreedyDecoder<B> {
+impl<B: Backend> TokenDecoder<B> for GreedyDecoder {
     fn reset(&mut self) {}
 
     fn update(&self, tokens: Tensor<B, 2, Int>, logits: Tensor<B, 2>, sum_logprobs: &mut Tensor<B, 2>) -> (Tensor<B, 2, Int>, bool) {

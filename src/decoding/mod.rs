@@ -1,5 +1,6 @@
 mod token_decoder;
 pub mod logit_filter;
+pub mod sequence_ranker;
 
 pub use token_decoder::TokenDecoder;
 pub use token_decoder::GreedyDecoder;
@@ -7,7 +8,7 @@ pub use token_decoder::GreedyDecoder;
 
 use std::collections::HashSet;
 use burn::prelude::Backend;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DecodingOptions {

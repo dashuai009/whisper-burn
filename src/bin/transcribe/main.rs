@@ -216,7 +216,6 @@ async fn main() {
         .to_device(&device);
 
     let mut decode_options = DecodingOptions::default();
-    decode_options.sample_len = Some(4);
     decode_options.suppress_tokens = Some(UserSuppressTokens::Text("-1".to_string()));
 
     println!("======== loading model.........");
