@@ -10,7 +10,7 @@ pub trait SequenceRanker<B: Backend> {
     /// - `sum_logprobs`: Tensor[n_batch, n_group]
     /// ## return
     /// Index[i]: 0 <= Index[i] < n_group, V.len() == n_batch
-    fn rank(&self, tokens: &Vec<Vec<Vec<u32>>>, sum_logprobs: Tensor<B, 2>) -> Vec<usize>;
+    fn rank(&self, tokens: &Vec<Vec<Vec<u32>>>, sum_logprobs:& Tensor<B, 2>) -> Vec<usize>;
 }
 
 
@@ -23,7 +23,7 @@ impl TakeFirstGroup{
 }
 
 impl<B: Backend> SequenceRanker<B> for TakeFirstGroup {
-    fn rank(&self, tokens:  &Vec<Vec<Vec<u32>>>, sum_logprobs: Tensor<B, 2>) -> Vec<usize> {
+    fn rank(&self, tokens:  &Vec<Vec<Vec<u32>>>, sum_logprobs:& Tensor<B, 2>) -> Vec<usize> {
        let n_batch = tokens.len();
         vec![0; n_batch]
     }

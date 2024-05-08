@@ -1,23 +1,19 @@
 use std::collections::HashMap;
-use burn::tensor::backend::Backend;
+use burn::prelude::{
+    Backend, Bool, Int, Tensor
+};
 
-use burn::tensor::{Bool, Int, Tensor};
 use num_traits::{ToPrimitive, Zero};
 use reqwest::{self, IntoUrl};
 
 use std::fs::File;
-
 use std::io::{copy, Write};
 use std::ops::Index;
-
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use burn::prelude::{Data, Device};
 
 use whisper::model::{Whisper, WhisperConfig};
-
 use whisper::token::{Gpt2Tokenizer, Language, SpecialToken};
-
 use burn::record::Recorder;
 use whisper::decoding::{DecodingOptions, GreedyDecoder, UserSuppressTokens, TokenDecoder};
 use whisper::decoding::logit_filter::{LogitFilter, SuppressBlank};
@@ -185,10 +181,10 @@ struct BeamSearchToken {
 #[derive(Debug)]
 pub struct DecodingResult<B: Backend> {
     audio_features: Tensor<B, 2>,
-    language: String,
+    language: Language,
     language_probs: HashMap<String, f32>,
     //  Optional[Dict[str, float]] = None
-    tokens: Vec<i32>,
+    tokens: Vec<u32>,
     text: String,
     avg_logprob: f32,
     no_speech_prob: f32,
@@ -197,17 +193,27 @@ pub struct DecodingResult<B: Backend> {
 }
 
 impl<B: Backend> DecodingResult<B> {
-    fn new(device: &Device<B>) -> Self {
+    fn new(
+        audio_features: Tensor<B, 2>,
+        language: Language,
+        language_probs: HashMap<String, f32>,
+        tokens: Vec<u32>,
+        text: String,
+        avg_logprob: f32,
+        no_speech_prob: f32,
+        temperature: f32,
+        compression_ratio: f32,
+    ) -> Self {
         Self {
-            audio_features: Tensor::<B, 2>::zeros([2, 3], device),
-            language: Default::default(),
-            language_probs: Default::default(),
-            tokens: Default::default(),
-            text: Default::default(),
-            avg_logprob: Default::default(),
-            no_speech_prob: Default::default(),
-            temperature: Default::default(),
-            compression_ratio: Default::default(),
+            audio_features,
+            language,
+            language_probs,
+            tokens,
+            text,
+            avg_logprob,
+            no_speech_prob,
+            temperature,
+            compression_ratio,
         }
     }
 }
@@ -415,7 +421,7 @@ impl<B: Backend> WhisperHelper<B> {
             let (langs, _) = self.detect_language(&mels);
             langs
         };
-        let initial_tokens = self.get_initial_tokens(langs_tokens);
+        let initial_tokens = self.get_initial_tokens(langs_tokens.clone());
 
         let sample_begin = initial_tokens.len() / n_batch;
         let sot_token = self.tokenizer.special_token(SpecialToken::StartofTranscript).unwrap();
@@ -461,16 +467,6 @@ impl<B: Backend> WhisperHelper<B> {
         let first_timestamp_token = self.tokenizer.special_token(SpecialToken::Timestamp(0.0)).unwrap();
         let end_token = self.tokenizer.special_token(SpecialToken::EndofText).unwrap();
         // let notimestamp = self.tokenizer.special_token(SpecialToken::NoTimeStamps).unwrap();
-        //
-        // // including the prev tokens causes whisper to hallucinate, repeating itself and failing to determine end of text
-        // /*let mut tokens: Vec<usize> = iter::once(start_of_prev_token)
-        // .chain(prev_normal_tokens.into_iter().cloned())
-        // .chain(iter::once(start_token))
-        // .chain(iter::once(transcription_token))
-        // .chain(iter::once(bpe.special_token(SpecialToken::Timestamp(0.0)).unwrap()))
-        // .collect();*/
-        //
-
 
         let initial_tokens = initial_tokens.iter().map(|&x| x as i32).collect::<Vec<_>>();
         let mut tokens: Tensor<B, 2, Int> = Tensor::from_ints(&*initial_tokens, &device)
@@ -481,7 +477,7 @@ impl<B: Backend> WhisperHelper<B> {
             .repeat(1, n_group)
             .reshape([n_batch * n_group, 3]);
 
-        println!("initial_tokens = {tokens}");
+        // println!("initial_tokens = {tokens}");
 
 
         let mut sum_logprobs = Tensor::<B, 2>::zeros([n_batch, 1], &device);
@@ -499,7 +495,7 @@ impl<B: Backend> WhisperHelper<B> {
                 logits = filter.apply(logits, &tokens);
             }
             let (next_tokens, completed) = decoder.update(tokens, logits, &mut sum_logprobs);
-            println!("next_tokens = {next_tokens}, completed = {completed}");
+            // println!("next_tokens = {next_tokens}, completed = {completed}");
             tokens = next_tokens;
             if completed {
                 break;
@@ -522,24 +518,73 @@ impl<B: Backend> WhisperHelper<B> {
 
         let tokens_data = tokens.into_data().value.into_iter().map(|x| x.to_u32().unwrap()).collect::<Vec<_>>();
 
-        let mut new_tokens = vec![];
-        for batch_idx in 0..n_batch{
+        let mut tokens = vec![];
+        for batch_idx in 0..n_batch {
             let mut group_tokens = vec![];
-            for group_idx in 0..n_group{
+            for group_idx in 0..n_group {
                 // let l=sample_begin;
-                let mut r=seq_len;
-                for r0 in sample_begin..seq_len{
-                    if tokens_data[batch_idx *(n_group * seq_len) + group_idx * seq_len + r0] == end_token{
+                let mut r = seq_len;
+                for r0 in sample_begin..seq_len {
+                    if tokens_data[batch_idx * (n_group * seq_len) + group_idx * seq_len + r0] == end_token {
                         r = r0;
                     }
                 }
-                group_tokens.push((tokens_data[batch_idx *(n_group * seq_len) + group_idx * seq_len + sample_begin .. r]).to_vec());
+                group_tokens.push((tokens_data[batch_idx * (n_group * seq_len) + group_idx * seq_len + sample_begin..r]).to_vec());
             }
-            new_tokens.push(group_tokens);
+            tokens.push(group_tokens);
         }
-        let ranks = sequence_ranker.rank(&new_tokens, sum_logprobs);
-        println!("new token = {new_tokens:?}");
-        vec![]
+
+        // select the top-ranked sample in each group
+        let selected = sequence_ranker.rank(&tokens, &sum_logprobs);
+        let tokens = selected
+            .iter()
+            .zip(tokens.iter())
+            .map(|(i, t)| {
+                t[*i].clone()
+            }).collect::<Vec<_>>();
+        let mut texts = vec![];
+        for token in &tokens {
+            texts.push(self.tokenizer.decode(token, true).expect(""));
+        }
+
+        let sum_logprobs = sum_logprobs
+            .to_data().value.iter()
+            .map(|&x| x.to_f32().unwrap())
+            .collect::<Vec<_>>()
+            .chunks(n_group).into_iter()// Vec<[f32;n_group]>
+            .zip(selected.iter())
+            .map(|(lp, i)| {
+                lp[*i]
+            }).collect::<Vec<_>>();
+
+        let avg_logprobs = sum_logprobs.iter().zip(tokens.iter())
+            .map(|(&lp, t)| {
+                lp / ((t.len() + 1) as f32)
+            }).collect::<Vec<_>>();
+
+
+        let res = texts.into_iter()
+            .zip(langs_tokens.into_iter())
+            .zip(tokens.into_iter())
+            // .zip(audio_features)
+            .zip(avg_logprobs.into_iter())
+            /*.zip(no_speech_probs)*/
+            .map(|(((text, language), tokens), /* features,*/ avg_logprob/*, no_speech_prob*/)| {
+                let audio_features = Tensor::<B, 2>::zeros([2, 3], &device);
+
+                DecodingResult::new(
+                    audio_features,
+                    language,
+                    Default::default(),
+                    tokens,
+                    text,
+                    avg_logprob,
+                    0.0,
+                    0.0,
+                    0.0,
+                )
+            }).collect::<Vec<_>>();
+        return res;
     }
 }
 

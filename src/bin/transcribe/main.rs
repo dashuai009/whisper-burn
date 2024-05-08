@@ -7,9 +7,9 @@ mod whsiper_helper;
 
 use strum::IntoEnumIterator;
 
-use whisper::token::{Gpt2Tokenizer, Language};
+use whisper::token::Language;
 
-use burn::record::{HalfPrecisionSettings, Recorder, RecorderError};
+use burn::record::Recorder;
 
 #[cfg(feature = "ffmpeg-input")]
 use ffmpeg::{frame, media};
@@ -26,8 +26,6 @@ cfg_if::cfg_if! {
 }
 
 use burn::{config::Config, module::Module, tensor::backend::Backend};
-use burn_import::pytorch::{LoadArgs, PyTorchFileRecorder};
-
 #[cfg(feature = "bound-input")]
 use hound::{self, SampleFormat};
 
@@ -230,7 +228,8 @@ async fn main() {
     let detect_result = helper.detect_language(&mel);
     println!("res = {detect_result:#?}");
     println!("========= begin run............");
-    let _ = helper.run(mel);
+    let res = helper.run(mel);
+    println!("run res = {res:#?}");
     return;
     // let temperature = vec![];
     // let compression_ratio_threshold = Some(2.4_f32);

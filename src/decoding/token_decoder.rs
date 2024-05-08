@@ -1,4 +1,3 @@
-use std::marker::PhantomData;
 use burn::prelude::{Backend, Int, Tensor};
 use burn::tensor::activation::log_softmax;
 
@@ -87,7 +86,7 @@ impl<B: Backend> TokenDecoder<B> for GreedyDecoder {
         } else {
             logits.clone().argmax(1)
         };
-        println!("next_tokens = {next_tokens}");
+        // println!("next_tokens = {next_tokens}");
 
         // [n_audio, val_size]
         let logprobs = log_softmax(logits, 1);
@@ -98,19 +97,19 @@ impl<B: Backend> TokenDecoder<B> for GreedyDecoder {
             .gather(1, next_tokens.clone().repeat(1, vol_size))
             .slice([0..n_audio, 0..1]);
 
-        println!("cur_logprobs = {current_logprobs}");
+        // println!("cur_logprobs = {current_logprobs}");
 
         let all_eot = Tensor::full([n_audio, 1], self.eot, &device);
         let mask_tokens = tokens.clone()
             .slice([0..n_audio, (cur_seq_len - 1)..cur_seq_len])
             .equal(all_eot.clone());
-        println!("mask_tokens = {mask_tokens}");
+        // println!("mask_tokens = {mask_tokens}");
 
         *sum_logprobs = (sum_logprobs.clone()).add(current_logprobs.mask_fill(mask_tokens.clone(), 0.0));
-        println!("sum_logprobs = {sum_logprobs}");
+        // println!("sum_logprobs = {sum_logprobs}");
 
         let next_tokens = next_tokens.mask_fill(mask_tokens.clone(), self.eot);
-        println!("next_tokens = {next_tokens}");
+        // println!("next_tokens = {next_tokens}");
 
         let tokens = Tensor::cat(vec![tokens, next_tokens.clone()], 1);// dim = -1
         let completed = next_tokens.equal(all_eot).all().into_scalar();

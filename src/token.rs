@@ -18,7 +18,7 @@ impl Gpt2Tokenizer {
     }
 
     pub fn encode(&self, text: &str) -> Vec<u32> {
-        let tokens = self.tokenizer.encode(text, true).unwrap();
+        let tokens = self.tokenizer.encode(text, false).unwrap();
         tokens.get_ids().to_vec()
     }
 
