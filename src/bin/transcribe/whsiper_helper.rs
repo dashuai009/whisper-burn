@@ -21,7 +21,7 @@ use whisper::token::{Gpt2Tokenizer, Language, SpecialToken};
 use burn::record::Recorder;
 use whisper::decoding::{DecodingOptions, GreedyDecoder, UserSuppressTokens, TokenDecoder};
 use whisper::decoding::logit_filter::{LogitFilter, SuppressBlank};
-use whisper::decoding::sequence_ranker::TakeFirstGroup;
+use whisper::decoding::sequence_ranker::{SequenceRanker, TakeFirstGroup};
 
 async fn download_from_url_to_file<
     T: IntoUrl + std::fmt::Debug,
@@ -515,15 +515,30 @@ impl<B: Backend> WhisperHelper<B> {
         let [n_batch_mul_n_group, seq_len] = tokens.dims();
         assert_eq!(n_batch_mul_n_group, n_batch * n_group);
         let tokens = tokens.reshape([n_batch, n_group, seq_len]);
-        let sum_logprops = sum_logprobs.reshape([n_batch, n_group]);
+        let sum_logprobs = sum_logprobs.reshape([n_batch, n_group]);
 
-        let (tokens, sum_logprops) = decoder.finalize(tokens, sum_logprops);
+        let (tokens, sum_logprops) = decoder.finalize(tokens, sum_logprobs.clone());
         let [_, _, seq_len] = tokens.dims();
 
-        let tokens_data = tokens.into_primitive();
+        let tokens_data = tokens.into_data().value.into_iter().map(|x| x.to_u32().unwrap()).collect::<Vec<_>>();
 
-
-
+        let mut new_tokens = vec![];
+        for batch_idx in 0..n_batch{
+            let mut group_tokens = vec![];
+            for group_idx in 0..n_group{
+                // let l=sample_begin;
+                let mut r=seq_len;
+                for r0 in sample_begin..seq_len{
+                    if tokens_data[batch_idx *(n_group * seq_len) + group_idx * seq_len + r0] == end_token{
+                        r = r0;
+                    }
+                }
+                group_tokens.push((tokens_data[batch_idx *(n_group * seq_len) + group_idx * seq_len + sample_begin .. r]).to_vec());
+            }
+            new_tokens.push(group_tokens);
+        }
+        let ranks = sequence_ranker.rank(&new_tokens, sum_logprobs);
+        println!("new token = {new_tokens:?}");
         vec![]
     }
 }
