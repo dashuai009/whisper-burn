@@ -1,5 +1,5 @@
 use burn::tensor::{
-    activation::relu, backend::Backend, BasicOps, Bool, Element, Float, Int, Numeric, Tensor,
+    activation::relu, backend::Backend, BasicOps, Element, Numeric, Tensor,
     TensorKind,
 };
 
@@ -21,10 +21,6 @@ pub fn tensor_min<B: Backend, const D: usize>(x: Tensor<B, D>, min: Tensor<B, D>
     -tensor_max(-x, -min)
 }
 
-pub fn tensor_log10<B: Backend, const D: usize>(x: Tensor<B, D>) -> Tensor<B, D> {
-    let ln10 = (10.0f64).ln();
-    x.log() / ln10
-}
 
 pub fn all_zeros<B: Backend, const D: usize>(x: Tensor<B, D>) -> bool {
     x.abs().max().into_scalar().to_f64().unwrap() == 0.0

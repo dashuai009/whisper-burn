@@ -81,7 +81,7 @@ impl<B: Backend> TokenDecoder<B> for GreedyDecoder {
         let [n_audio, vol_size] = logits.dims();
 
         // next_tokens: [n_audio, 1]
-        let mut next_tokens = if self.temperature == 0.0 {
+        let next_tokens = if self.temperature == 0.0 {
             logits.clone().argmax(1) // dim == -1 == 1
         } else {
             logits.clone().argmax(1)
@@ -92,7 +92,7 @@ impl<B: Backend> TokenDecoder<B> for GreedyDecoder {
         let logprobs = log_softmax(logits, 1);
 
 
-        let mut current_logprobs = logprobs
+        let current_logprobs = logprobs
             // .select()
             .gather(1, next_tokens.clone().repeat(1, vol_size))
             .slice([0..n_audio, 0..1]);

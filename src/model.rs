@@ -1,20 +1,14 @@
-// pub mod load;
-
-
 use burn::{
     config::Config,
-    module::{Module, Param},
+    module::{Module, Param, ParamId},
     nn::{
         self,
-        conv::{Conv1d, Conv1dConfig, Conv1dRecord},
+        conv::{Conv1d, Conv1dConfig},
         PaddingConfig1d,
+        Embedding, EmbeddingConfig, Linear
     },
-    tensor::{activation::softmax, backend::Backend, module::embedding, Distribution, Int, Tensor},
+    tensor::{ activation::softmax, backend::Backend, Int, Tensor},
 };
-use burn::module::ParamId;
-use burn::nn::{Embedding, EmbeddingConfig, Linear};
-use burn::tensor::{Device, Float};
-use num_traits::real::Real;
 
 #[derive(Config, Debug)]
 pub struct WhisperConfig {
@@ -133,7 +127,7 @@ pub struct TextDecoder<B: Backend> {
 
 impl<B: Backend> TextDecoder<B> {
     fn forward(&self, x: Tensor<B, 2, Int>, xa: Tensor<B, 3>) -> Tensor<B, 3> {
-        let [n_batch, seq_len] = x.dims();
+        let [_n_batch, seq_len] = x.dims();
 
         assert!(
             seq_len <= self.n_text_ctx,
@@ -149,7 +143,6 @@ impl<B: Backend> TextDecoder<B> {
             .slice([0..seq_len])
             .unsqueeze::<3>();
 
-        //let mask = attn_decoder_mask(seq_len);
 
         let mut x = x;
         for block in &self.blocks {
@@ -244,7 +237,7 @@ pub struct AudioEncoder<B: Backend> {
 
 impl<B: Backend> AudioEncoder<B> {
     fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
-        let [_, n_mels, n_ctx] = x.dims();
+        let [_, n_mels, _n_ctx] = x.dims();
 
         assert_eq!(n_mels, self.n_mels, "Audio mel spectrum size must be {}.", self.n_mels);
         // assert!(
@@ -347,7 +340,6 @@ impl ResidualDecoderAttentionBlockConfig {
         let cross_attn_ln = nn::LayerNormConfig::new(self.n_state).init(device);
 
         let mlp0 = nn::LinearConfig::new(self.n_state, 4 * self.n_state).init(device);
-        let gelu = nn::Gelu::new();
         let mlp2 = nn::LinearConfig::new(4 * self.n_state, self.n_state).init(device);
 
         let mlp_ln = nn::LayerNormConfig::new(self.n_state).init(device);
@@ -545,19 +537,6 @@ pub fn qkv_attention<B: Backend>(
     let o = w.matmul(v).permute([0, 2, 1, 3]).flatten(2, 3);
 
     return o;
-}
-
-#[deprecated]
-pub fn attn_decoder_mask<B: Backend>(seq_length: usize, device: &Device<B>) -> Tensor<B, 2> {
-    let device = Default::default();
-    let mut mask = Tensor::<B, 2>::zeros([seq_length, seq_length], &device);
-
-    for i in 0..(seq_length - 1) {
-        let values = Tensor::<B, 2>::zeros([1, seq_length - (i + 1)], &device).add_scalar(f32::NEG_INFINITY);
-        mask = mask.slice_assign([i..i + 1, i + 1..seq_length], values);
-    }
-
-    return mask;
 }
 
 

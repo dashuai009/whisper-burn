@@ -1,15 +1,8 @@
 #[cfg(feature = "ffmpeg-input")]
 extern crate ffmpeg_next;
 
-mod lib;
 mod whsiper_helper;
 
-
-use strum::IntoEnumIterator;
-
-use whisper::token::Language;
-
-use burn::record::Recorder;
 
 #[cfg(feature = "ffmpeg-input")]
 use ffmpeg::{frame, media};
@@ -25,7 +18,6 @@ cfg_if::cfg_if! {
     }
 }
 
-use burn::{config::Config, module::Module, tensor::backend::Backend};
 #[cfg(feature = "bound-input")]
 use hound::{self, SampleFormat};
 
@@ -168,7 +160,7 @@ use crate::whsiper_helper::{WhichModel, WhisperHelper};
 
 #[tokio::main]
 async fn main() {
-    let wav_file = "./test.m4a";
+    let wav_file = "./audio16k.wav";
 
     cfg_if::cfg_if! {
         if #[cfg(feature = "wgpu-backend")] {
@@ -183,13 +175,7 @@ async fn main() {
 
     cfg_if::cfg_if! {
         if #[cfg(feature = "hound-input")] {
-            let (waveform, _) = match load_audio_waveform(wav_file) {
-                Ok(w) => w,
-                Err(e) => {
-                    eprintln!("Failed to load audio file: {}", e);
-                    process::exit(1);
-                }
-            };
+            let (waveform, _) = load_audio_waveform(wav_file).expect("");
         } else if #[cfg(feature = "ffmpeg-input")] {
             let waveform = load_audio_waveform_with_ffmpeg(wav_file).unwrap();
         }
@@ -198,13 +184,10 @@ async fn main() {
     // return;
 
     // let temperature = vec![];
-    let compression_ratio_threshold = Some(2.4_f32);
-    let logprob_threshold = Some(-1.0_f32);
-    let no_speech_threshold = Some(0.6_f32);
-    let clip_timestamps = vec![(0.0f32, 3.0f32)];
-    let mut decode_options = whisper::decoding::DecodingOptions::default();
-
-    let lang = Language::English;
+    let _compression_ratio_threshold = Some(2.4_f32);
+    let _logprob_threshold = Some(-1.0_f32);
+    let _no_speech_threshold = Some(0.6_f32);
+    let _clip_timestamps = vec![(0.0f32, 3.0f32)];
 
     let input_len = waveform.len();
     let audio = Tensor::<CurBackend, 2>::from_floats(

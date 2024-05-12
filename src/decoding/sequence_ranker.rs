@@ -1,5 +1,4 @@
-use burn::prelude::{Backend, Int};
-use burn::tensor::Tensor;
+use burn::prelude::{Backend, Tensor};
 
 pub trait SequenceRanker<B: Backend> {
     /// Given a list of groups of samples and their cumulative log probabilities,
@@ -23,7 +22,7 @@ impl TakeFirstGroup{
 }
 
 impl<B: Backend> SequenceRanker<B> for TakeFirstGroup {
-    fn rank(&self, tokens:  &Vec<Vec<Vec<u32>>>, sum_logprobs:& Tensor<B, 2>) -> Vec<usize> {
+    fn rank(&self, tokens:  &Vec<Vec<Vec<u32>>>, _sum_logprobs:& Tensor<B, 2>) -> Vec<usize> {
        let n_batch = tokens.len();
         vec![0; n_batch]
     }

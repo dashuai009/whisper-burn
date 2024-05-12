@@ -1,6 +1,5 @@
 use std::rc::Rc;
 use burn::prelude::{Backend, Bool, Data, Int, Tensor};
-use tokenizers::Tokenizer;
 use crate::token::{Gpt2Tokenizer, SpecialToken};
 
 /// Apply any filtering or masking to logits in-place
@@ -68,7 +67,7 @@ impl SuppressTokens{
     }
 }
 impl<B:Backend> LogitFilter<B> for SuppressTokens{
-    fn apply(&self, logits: Tensor<B, 2>, tokens: &Tensor<B, 2, Int>) -> Tensor<B, 2> {
+    fn apply(&self, logits: Tensor<B, 2>, _tokens: &Tensor<B, 2, Int>) -> Tensor<B, 2> {
         let device = logits.device();
         let [n_batch, vocab_size] = logits.dims();
         let mut suppress_indices = vec![false; vocab_size];

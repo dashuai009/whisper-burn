@@ -27,19 +27,10 @@ tokenizers = { version = "0.15.2", default-features = false, features = [
 ] }
 #npy = "0.4.0"
 cfg-if = "1"
-strum = "0.26.1"
-strum_macros = "0.26.1"
-#zip = "0.6.6"
 
 ffmpeg-next = { version = "7.0.0", features = [
     "build",
-    # "build-lib-snappy",
-    "build-lib-dav1d",
-    # "build-lib-opencore-amrwb",
-    "build-license-gpl", "build-license-nonfree", "build-license-version3",
-    "build-lib-x264",
-    "build-lib-x265",
-    "build-lib-vpx"
+    "build-license-gpl", "build-license-nonfree", "build-license-version3"
 ], optional = true }
 
 reqwest = "0.12"

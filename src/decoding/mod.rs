@@ -2,18 +2,25 @@ mod token_decoder;
 pub mod logit_filter;
 pub mod sequence_ranker;
 
-pub use token_decoder::TokenDecoder;
-pub use token_decoder::GreedyDecoder;
+pub use token_decoder::{TokenDecoder, GreedyDecoder};
 
 
 use std::collections::HashSet;
-use burn::prelude::Backend;
 use serde::{Deserialize, Serialize};
+
+/// whether to perform X->X speech recognition ('transcribe') or X->English translation ('translate')
+#[derive(Default, Debug, Serialize, Deserialize, Clone)]
+pub enum TaskType {
+    #[default]
+    Transcribe,
+    Translate,
+    LangId,
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DecodingOptions {
     // whether to perform X->X "transcribe" or X->English "translate"
-    pub task: String,
+    pub task: TaskType,
 
     // language that the audio is in; uses detected language if None
     pub language: Option<String>,
@@ -59,7 +66,7 @@ pub enum UserSuppressTokens {
 impl Default for DecodingOptions {
     fn default() -> Self {
         Self {
-            task: "transcribe".to_owned(),
+            task: TaskType::Transcribe,
             language: None,
             temperature: 0.0,
             sample_len: None,

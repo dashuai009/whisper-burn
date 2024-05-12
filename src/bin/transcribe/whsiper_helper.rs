@@ -3,21 +3,22 @@ use burn::prelude::{
     Backend, Bool, Int, Tensor
 };
 
-use num_traits::{ToPrimitive, Zero};
+use num_traits::ToPrimitive;
 use reqwest::{self, IntoUrl};
 
 use std::fs::File;
-use std::io::{copy, Write};
-use std::ops::Index;
+use std::io::copy;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use whisper::model::{Whisper, WhisperConfig};
 use whisper::token::{Gpt2Tokenizer, Language, SpecialToken};
 use burn::record::Recorder;
-use whisper::decoding::{DecodingOptions, GreedyDecoder, UserSuppressTokens, TokenDecoder};
-use whisper::decoding::logit_filter::{LogitFilter, SuppressBlank};
-use whisper::decoding::sequence_ranker::{SequenceRanker, TakeFirstGroup};
+use whisper::decoding::{
+    DecodingOptions, GreedyDecoder, UserSuppressTokens, TokenDecoder,
+    logit_filter::{LogitFilter, SuppressBlank},
+    sequence_ranker::{SequenceRanker, TakeFirstGroup}
+};
 
 async fn download_from_url_to_file<
     T: IntoUrl + std::fmt::Debug,
@@ -147,9 +148,9 @@ impl WhichModel {
         }
     }
 
-    fn is_downlaoded(&self) -> bool {
-        return false;
-    }
+    // fn is_downlaoded(&self) -> bool {
+    //     return false;
+    // }
 
     fn model_and_revision(&self) -> (&'static str, &'static str) {
         match self {
@@ -173,8 +174,8 @@ impl WhichModel {
 
 #[derive(Clone)]
 struct BeamSearchToken {
-    token: usize,
-    log_prob: f64,
+    _token: usize,
+    _log_prob: f64,
 }
 
 
@@ -320,7 +321,7 @@ impl<B: Backend> WhisperHelper<B> {
             .reshape(logits_dims);
         let logits = logits.mask_fill(mask.clone(), -f32::INFINITY);
         // language_tokens = logits.argmax(dim=-1)
-        let language_tokens = logits.clone().argmax(1);
+        let _language_tokens = logits.clone().argmax(1);
         // language_token_probs = logits.softmax(dim=-1).cpu()
         let language_token_probs = burn::tensor::activation::softmax(logits, 1); // dim= -1
         let (props, indices) = language_token_probs.clone().max_dim_with_indices(1);
@@ -353,9 +354,6 @@ impl<B: Backend> WhisperHelper<B> {
     /// - `tokens`: n_batch * 3 tokens in a Vec<u32>
     fn get_initial_tokens(&self, audio_languages: Vec<Language>) -> Vec<u32> {
         let transcription_token = self.tokenizer.special_token(SpecialToken::Transcribe).unwrap();
-        let start_of_prev_token = self.tokenizer.special_token(SpecialToken::StartofPrev).unwrap();
-        let first_timestamp_token = self.tokenizer.special_token(SpecialToken::Timestamp(0.0)).unwrap();
-        let notimestamp = self.tokenizer.special_token(SpecialToken::NoTimeStamps).unwrap();
         let sot_token = self.tokenizer.special_token(SpecialToken::StartofTranscript).unwrap();
         let mut res = vec![];
         for language in audio_languages {
@@ -425,14 +423,14 @@ impl<B: Backend> WhisperHelper<B> {
 
         let sample_begin = initial_tokens.len() / n_batch;
         let sot_token = self.tokenizer.special_token(SpecialToken::StartofTranscript).unwrap();
-        let sot_index = initial_tokens.iter().find(|&&x| x == sot_token).unwrap();
+        let _sot_index = initial_tokens.iter().find(|&&x| x == sot_token).unwrap();
 
         // let inference
         let sequence_ranker = TakeFirstGroup::new();
         // todo: beam search
         let decoder = self.init_decoder();
 
-        /// logit filters: applies various rules to suppress or penalize certain tokens
+        // logit filters: applies various rules to suppress or penalize certain tokens
         let mut logit_filters: Vec<Box<dyn LogitFilter<B>>> = vec![];
         if self.decode_options.suppress_blank {
             logit_filters.push(Box::new(SuppressBlank::new(self.tokenizer.clone(), sample_begin)));
@@ -449,7 +447,7 @@ impl<B: Backend> WhisperHelper<B> {
         let audio_features = self.model.forward_encoder(mels);
 
         let n_ctx_max_encoder = self.model.encoder_ctx_size();
-        let n_ctx_max_decoder = self.model.decoder_ctx_size();
+        let _n_ctx_max_decoder = self.model.decoder_ctx_size();
 
         let padding = 0;
         if n_ctx + padding > n_ctx_max_encoder {
@@ -460,13 +458,7 @@ impl<B: Backend> WhisperHelper<B> {
             );
         }
 
-        let start_token = self.tokenizer.special_token(SpecialToken::StartofTranscript).unwrap();
-        let transcription_token = self.tokenizer.special_token(SpecialToken::Transcribe).unwrap();
-        let start_of_prev_token = self.tokenizer.special_token(SpecialToken::StartofPrev).unwrap();
-        // let lang_token = self.tokenizer.special_token(SpecialToken::Language(lang)).unwrap();
-        let first_timestamp_token = self.tokenizer.special_token(SpecialToken::Timestamp(0.0)).unwrap();
         let end_token = self.tokenizer.special_token(SpecialToken::EndofText).unwrap();
-        // let notimestamp = self.tokenizer.special_token(SpecialToken::NoTimeStamps).unwrap();
 
         let initial_tokens = initial_tokens.iter().map(|&x| x as i32).collect::<Vec<_>>();
         let mut tokens: Tensor<B, 2, Int> = Tensor::from_ints(&*initial_tokens, &device)
@@ -481,7 +473,7 @@ impl<B: Backend> WhisperHelper<B> {
 
 
         let mut sum_logprobs = Tensor::<B, 2>::zeros([n_batch, 1], &device);
-        let no_speech_probs = Tensor::<B, 2>::full([n_batch, 1], f32::INFINITY, &device);
+        let _no_speech_probs = Tensor::<B, 2>::full([n_batch, 1], f32::INFINITY, &device);
         for i in 0..sample_len {
             let logits = self.model.forward_decoder(tokens.clone(), audio_features.clone());
             if i == 0 && self.tokenizer.special_token(SpecialToken::NoSpeech).is_some() {
@@ -513,7 +505,7 @@ impl<B: Backend> WhisperHelper<B> {
         let tokens = tokens.reshape([n_batch, n_group, seq_len]);
         let sum_logprobs = sum_logprobs.reshape([n_batch, n_group]);
 
-        let (tokens, sum_logprops) = decoder.finalize(tokens, sum_logprobs.clone());
+        let (tokens, _sum_logprops) = decoder.finalize(tokens, sum_logprobs.clone());
         let [_, _, seq_len] = tokens.dims();
 
         let tokens_data = tokens.into_data().value.into_iter().map(|x| x.to_u32().unwrap()).collect::<Vec<_>>();
@@ -609,7 +601,7 @@ mod test {
         }
 
         let decode_options = DecodingOptions::default();
-        let M: WhisperHelper<CurBackend> = WhisperHelper::new(WhichModel::Base, decode_options, &device).await;
+        let m: WhisperHelper<CurBackend> = WhisperHelper::new(WhichModel::Base, decode_options, &device).await;
     }
 
 
