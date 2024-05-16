@@ -1,46 +1,24 @@
 use std::collections::HashMap;
-use burn::prelude::{
-    Backend, Bool, Int, Tensor
-};
-
-use num_traits::ToPrimitive;
-use reqwest::{self, IntoUrl};
-
-use std::fs::File;
-use std::io::copy;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 
+use burn::config::ConfigError;
+use burn::prelude::{
+    Backend, Bool, Int, Tensor,
+};
+use burn::record::Recorder;
+use hf_hub;
+use num_traits::ToPrimitive;
+
+use whisper::decoding::{
+    DecodingOptions, GreedyDecoder, logit_filter::{LogitFilter, SuppressBlank}, sequence_ranker::{SequenceRanker, TakeFirstGroup},
+    TokenDecoder,
+    UserSuppressTokens,
+};
 use whisper::model::{Whisper, WhisperConfig};
 use whisper::token::{Gpt2Tokenizer, Language, SpecialToken};
-use burn::record::Recorder;
-use whisper::decoding::{
-    DecodingOptions, GreedyDecoder, UserSuppressTokens, TokenDecoder,
-    logit_filter::{LogitFilter, SuppressBlank},
-    sequence_ranker::{SequenceRanker, TakeFirstGroup}
-};
 
-async fn download_from_url_to_file<
-    T: IntoUrl + std::fmt::Debug,
-    P: AsRef<Path> + std::fmt::Debug,
->(
-    url: T,
-    load_file_path: P,
-) -> Result<(), reqwest::Error> {
-    println!("download from [{url:?}] \n\t to {load_file_path:?}");
-    let response = reqwest::get(url).await?;
-    // 分离文件路径和文件名
-    let perfix = load_file_path.as_ref().parent().unwrap();
-    std::fs::create_dir_all(perfix).expect("msg");
-    if response.status().is_success() {
-        let mut dest = File::create(load_file_path).expect("msg");
-        let content = response.bytes().await?;
-        copy(&mut content.as_ref(), &mut dest).expect("");
-    } else {
-        println!("download error: {}", response.status());
-    }
-    return Ok(());
-}
+use crate::model_config::MODEL_CONFIG;
 
 /// 模型种类。
 /// 目前一共11种模型+2种distil出品的加速推理的模型
@@ -85,38 +63,6 @@ impl WhichModel {
                 false
             }
         }
-    }
-
-    async fn download_to_dir<T: AsRef<Path>>(&self, dir: T) -> Result<(), reqwest::Error> {
-        // 目标本地路径
-        let local_path = dir.as_ref().join(self.model_local_path());
-        if !local_path.exists() {
-            let url = match self {
-                Self::TinyEn => "https://openaipublic.azureedge.net/main/whisper/models/d3dd57d32accea0b295c96e26691aa14d8822fac7d9d27d5dc00b4ca2826dd03/tiny.en.pt",
-                Self::Tiny => r"https://openaipublic.azureedge.net/main/whisper/models/65147644a518d12f04e32d6f3b26facc3f8dd46e5390956a9424a650c0ce22b9/tiny.pt",
-                Self::BaseEn => r"https://openaipublic.azureedge.net/main/whisper/models/25a8566e1d0c1e2231d1c762132cd20e0f96a85d16145c3a00adf5d1ac670ead/base.en.pt",
-                Self::Base => r"https://openaipublic.azureedge.net/main/whisper/models/ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e/base.pt",
-                Self::SmallEn => r"https://openaipublic.azureedge.net/main/whisper/models/f953ad0fd29cacd07d5a9eda5624af0f6bcf2258be67c92b79389873d91e0872/small.en.pt",
-                Self::Small => r"https://openaipublic.azureedge.net/main/whisper/models/9ecf779972d90ba49c06d968637d720dd632c55bbf19d441fb42bf17a411e794/small.pt",
-                Self::MediumEn => r"https://openaipublic.azureedge.net/main/whisper/models/d7440d1dc186f76616474e0ff0b3b6b879abc9d1a4926b7adfa41db2d497ab4f/medium.en.pt",
-                Self::Medium => r"https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1/medium.pt",
-                Self::LargeV1 => r"https://openaipublic.azureedge.net/main/whisper/models/e4b87e7e0bf463eb8e6956e646f1e277e901512310def2c24bf0e11bd3c28e9a/large-v1.pt",
-                Self::LargeV2 => r"https://openaipublic.azureedge.net/main/whisper/models/81f7c96c852ee8fc832187b0132e569d6c3065a3252ed18e56effd0b6a73e524/large-v2.pt",
-                Self::LargeV3 => r"https://openaipublic.azureedge.net/main/whisper/models/e5b1a55b89c1367dacf97e3e19bfd829a01529dbfdeefa8caeb59b3f1b81dadb/large-v3.pt",
-                Self::DistilLargeV2 | Self::DistilMediumEn => todo!()
-            };
-            download_from_url_to_file(url, local_path).await?;
-        }
-
-        let tokenizer_json = dir.as_ref().join(self.tokenizer_json_path());
-        if !tokenizer_json.exists() {
-            let url = format!(
-                "https://huggingface.co/{}/resolve/main/tokenizer.json?download=true",
-                self.model_and_revision().0
-            );
-            download_from_url_to_file(url, tokenizer_json).await?;
-        }
-        Ok(())
     }
 
     fn model_local_path(&self) -> PathBuf {
@@ -168,6 +114,25 @@ impl WhichModel {
             Self::DistilMediumEn => ("distil-whisper/distil-medium.en", "main"),
             Self::DistilLargeV2 => ("distil-whisper/distil-large-v2", "main"),
         }
+    }
+
+    fn load_config(&self) -> Result<WhisperConfig, ConfigError> {
+        let json_str = match self {
+            WhichModel::Tiny => { MODEL_CONFIG[0] }
+            WhichModel::TinyEn => { MODEL_CONFIG[1] }
+            WhichModel::Base => { MODEL_CONFIG[2] }
+            WhichModel::BaseEn => { MODEL_CONFIG[3] }
+            WhichModel::Small => { MODEL_CONFIG[4] }
+            WhichModel::SmallEn => { MODEL_CONFIG[5] }
+            WhichModel::Medium => { MODEL_CONFIG[6] }
+            WhichModel::MediumEn => { MODEL_CONFIG[7] }
+            WhichModel::LargeV1 => { MODEL_CONFIG[8] }
+            WhichModel::LargeV2 => { MODEL_CONFIG[8] }
+            WhichModel::LargeV3 => { MODEL_CONFIG[8] }
+            WhichModel::DistilMediumEn => { MODEL_CONFIG[8] }
+            WhichModel::DistilLargeV2 => { MODEL_CONFIG[8] }
+        };
+        serde_json::from_str(json_str).map_err(|err| ConfigError::InvalidFormat(format!("{err}")))
     }
 }
 
@@ -232,28 +197,82 @@ pub struct WhisperHelper<B: Backend> {
 
 impl<B: Backend> WhisperHelper<B> {
     pub async fn new(model_kind: WhichModel, decode_options: DecodingOptions, device: &B::Device) -> WhisperHelper<B> {
-        let model_dir = Path::new("./model");
-        model_kind.download_to_dir(model_dir).await.expect("msg");
-        let config_path = model_dir.join(model_kind.config_path());
-        let config = <WhisperConfig as burn::config::Config>::load(config_path).expect("msg");
-        let load_args = burn_import::pytorch::LoadArgs::new(
-            model_dir.join(model_kind.model_local_path()).into(),
-        )
+        let hf_api = hf_hub::api::sync::Api::new().unwrap();
+        let (model_id, _) = model_kind.model_and_revision();
+        let model_filename = hf_api
+            .model(model_id.to_string())
+            .get("pytorch_model.bin")
+            .unwrap();
+        let tokenizer_json_filename = hf_api.model(model_id.to_string()).get("tokenizer.json").unwrap();
+        let config = model_kind.load_config().expect("can not load config.");
+        let load_args = burn_import::pytorch::LoadArgs::new(model_filename)
             // .with_debug_print()
+            // adapt to huggingface model. :-))
+            .with_key_remap("model.(.*)", "$1")
+            .with_key_remap(".layers.", ".blocks.")
+            .with_key_remap(".encoder_attn.k_proj.", ".cross_attn.key.")
+            .with_key_remap(".encoder_attn.out_proj.", ".cross_attn.out.")
+            .with_key_remap(".encoder_attn.q_proj.", ".cross_attn.query.")
+            .with_key_remap(".encoder_attn.v_proj.", ".cross_attn.value.")
+            .with_key_remap(".encoder_attn_layer_norm.", ".cross_attn_ln.")
+            .with_key_remap(
+                r"encoder\.blocks\.(.*)\.self_attn\.out_proj\.",
+                r"encoder.blocks.$1.attn.out.",
+            )
+            .with_key_remap(
+                r"encoder\.blocks\.(.*)\.self_attn\.q_proj\.",
+                r"encoder.blocks.$1.attn.query.",
+            )
+            .with_key_remap(
+                r"encoder\.blocks\.(.*)\.self_attn\.v_proj\.",
+                r"encoder.blocks.$1.attn.value.",
+            )
+            .with_key_remap(
+                r"encoder\.blocks\.(.*)\.self_attn\.k_proj\.",
+                r"encoder.blocks.$1.attn.key.",
+            )
+            .with_key_remap(
+                r"encoder\.blocks\.(.*)\.self_attn_layer_norm\.",
+                r"encoder.blocks.$1.attn_ln.",
+            )
+            .with_key_remap(
+                r"decoder\.blocks\.(.*)\.self_attn\.out_proj\.",
+                r"decoder.blocks.$1.attn.out.",
+            )
+            .with_key_remap(
+                r"decoder\.blocks\.(.*)\.self_attn\.q_proj\.",
+                r"decoder.blocks.$1.attn.query.",
+            )
+            .with_key_remap(
+                r"decoder\.blocks\.(.*)\.self_attn\.v_proj\.",
+                r"decoder.blocks.$1.attn.value.",
+            )
+            .with_key_remap(
+                r"decoder\.blocks\.(.*)\.self_attn\.k_proj\.",
+                r"decoder.blocks.$1.attn.key.",
+            )
+            .with_key_remap(
+                r"decoder\.blocks\.(.*)\.self_attn_layer_norm\.",
+                r"decoder.blocks.$1.attn_ln.",
+            )
+            .with_key_remap(".final_layer_norm.", ".mlp_ln.")
+            .with_key_remap(".fc1.", ".mlp.0.")
+            .with_key_remap(".fc2.", ".mlp.2.")
+            .with_key_remap("encoder.layer_norm", "encoder.ln_post")
+            .with_key_remap(".embed_positions.weight", ".positional_embedding")
+            .with_key_remap("decoder.layer_norm.", "decoder.ln.")
+            .with_key_remap("decoder.embed_tokens", "decoder.token_embedding")
+            // adapt to burn's sequential model
             .with_key_remap("mlp.0", "mlp0")
-            .with_key_remap("mlp.2", "mlp2")
-            .with_top_level_key("model_state_dict");
+            .with_key_remap("mlp.2", "mlp2");
+        // .with_top_level_key("model_state_dict");
         let model =
             burn_import::pytorch::PyTorchFileRecorder::<burn::record::HalfPrecisionSettings>::new()
                 .load(load_args, device)
                 .map(|record| burn::module::Module::load_record(config.init(device), record))
                 .expect("msg");
 
-        let tokenizer = Rc::new(
-            Gpt2Tokenizer::new(model_dir.join(model_kind.tokenizer_json_path())).expect("msg")
-        );
-
-        println!("non_speech_token = {:?}", tokenizer.non_speech_tokens());
+        let tokenizer = Rc::new(Gpt2Tokenizer::new(tokenizer_json_filename).expect("msg"));
 
         Self {
             config,
@@ -583,10 +602,12 @@ impl<B: Backend> WhisperHelper<B> {
 #[cfg(test)]
 mod test {
     use burn::prelude::Tensor;
-    use burn_wgpu::{Wgpu, AutoGraphicsApi, WgpuDevice};
-    use crate::whsiper_helper::{WhichModel, WhisperHelper};
+    use burn_wgpu::{AutoGraphicsApi, Wgpu, WgpuDevice};
     use tokio;
+
     use whisper::decoding::DecodingOptions;
+
+    use crate::whsiper_helper::{WhichModel, WhisperHelper};
 
     #[tokio::test]
     async fn test_detect_language() {

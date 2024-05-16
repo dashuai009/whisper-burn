@@ -2,6 +2,7 @@
 extern crate ffmpeg_next;
 
 mod whsiper_helper;
+mod model_config;
 
 
 #[cfg(feature = "ffmpeg-input")]

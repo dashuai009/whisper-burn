@@ -33,8 +33,9 @@ ffmpeg-next = { version = "7.0.0", features = [
     "build-license-gpl", "build-license-nonfree", "build-license-version3"
 ], optional = true }
 
-reqwest = "0.12"
 tokio = { version = "1", features = ["full"] }
+serde_json = "1.0.116"
+hf-hub = { version = "0.3.2" }
 
 [build-dependencies]
 pkg-config = "0.3"

@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use serde::ser::StdError;
 use std::result;
 
@@ -425,9 +426,9 @@ pub enum SpecialToken {
     Timestamp(f64),
 }
 
-impl ToString for SpecialToken {
-    fn to_string(&self) -> String {
-        match self {
+impl Display for SpecialToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str = match self {
             SpecialToken::EndofText => "<|endoftext|>".into(),
             SpecialToken::StartofTranscript => "<|startoftranscript|>".into(),
             SpecialToken::Translate => "<|translate|>".into(),
@@ -438,7 +439,8 @@ impl ToString for SpecialToken {
             SpecialToken::NoTimeStamps => "<|notimestamps|>".into(),
             SpecialToken::Language(lang) => format!("<|{}|>", lang.as_str()),
             SpecialToken::Timestamp(val) => format!("<|{:.2}|>", val),
-        }
+        };
+        write!(f, "{}", str)
     }
 }
 
