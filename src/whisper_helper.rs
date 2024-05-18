@@ -11,13 +11,13 @@ use burn::tensor::activation::softmax;
 use hf_hub;
 use num_traits::ToPrimitive;
 
-use whisper::decoding::{
+use crate::decoding::{
     DecodingOptions, GreedyDecoder, logit_filter::{LogitFilter, SuppressBlank}, sequence_ranker::{SequenceRanker, TakeFirstGroup},
     TokenDecoder,
     UserSuppressTokens,
 };
-use whisper::model::{Whisper, WhisperConfig};
-use whisper::token::{Gpt2Tokenizer, Language, SpecialToken};
+use crate::model::{Whisper, WhisperConfig};
+use crate::token::{Gpt2Tokenizer, Language, SpecialToken};
 
 use crate::model_config::MODEL_CONFIG;
 
@@ -195,7 +195,7 @@ pub struct WhisperHelper<B: Backend> {
 }
 
 impl<B: Backend> WhisperHelper<B> {
-    pub async fn new(model_kind: WhichModel, device: &B::Device) -> WhisperHelper<B> {
+    pub fn new(model_kind: WhichModel, device: &B::Device) -> WhisperHelper<B> {
         let hf_api = hf_hub::api::sync::ApiBuilder::new().with_endpoint("https://hf-mirror.com".to_string()).build().unwrap();
         let (model_id, _) = model_kind.model_and_revision();
         let model_filename = hf_api
@@ -206,7 +206,7 @@ impl<B: Backend> WhisperHelper<B> {
         let config = model_kind.load_config().expect("can not load config.");
         let load_args = burn_import::pytorch::LoadArgs::new(model_filename)
             // .with_debug_print()
-            // adapt to huggingface model. :-))
+            // adapt to hugging face model. :-))
             .with_key_remap("model.(.*)", "$1")
             .with_key_remap(".layers.", ".blocks.")
             .with_key_remap(".encoder_attn.k_proj.", ".cross_attn.key.")
@@ -296,7 +296,7 @@ impl<B: Backend> WhisperHelper<B> {
         // mel = model.encoder(mel)
         let mel = self.model.forward_encoder(mel.clone());
         let device = &mel.device();
-        let language_token_ids = whisper::token::LANGUAGES
+        let language_token_ids = crate::token::LANGUAGES
             .iter()
             .map(|t| {
                 self.tokenizer
@@ -453,7 +453,7 @@ impl<B: Backend> WhisperHelper<B> {
             logit_filters.push(Box::new(SuppressBlank::new(self.tokenizer.clone(), sample_begin)));
         }
         if decoding_options.suppress_tokens.is_some() {
-            logit_filters.push(Box::new(whisper::decoding::logit_filter::SuppressTokens::new(self.get_suppress_token(&decoding_options))));
+            logit_filters.push(Box::new(crate::decoding::logit_filter::SuppressTokens::new(self.get_suppress_token(&decoding_options))));
         }
 
 
@@ -595,7 +595,7 @@ impl<B: Backend> WhisperHelper<B> {
                     text,
                     avg_logprob,
                     no_speech_prob.into_scalar().to_f32().unwrap(),
-                    self.decode_options.temperature,
+                    decoding_options.temperature,
                     0.0,
                 )
             }).collect::<Vec<_>>();
@@ -654,7 +654,7 @@ mod test {
     use burn_wgpu::{AutoGraphicsApi, Wgpu, WgpuDevice};
     use tokio;
 
-    use whisper::decoding::DecodingOptions;
+    use crate::decoding::DecodingOptions;
 
     use crate::whsiper_helper::{WhichModel, WhisperHelper};
 
@@ -671,7 +671,7 @@ mod test {
         }
 
         let decode_options = DecodingOptions::default();
-        let m: WhisperHelper<CurBackend> = WhisperHelper::new(WhichModel::Base, decode_options, &device).await;
+        let m: WhisperHelper<CurBackend> = WhisperHelper::new(WhichModel::Base, decode_options, &device);
     }
 
 

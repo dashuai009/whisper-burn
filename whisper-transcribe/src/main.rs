@@ -1,15 +1,11 @@
 #[cfg(feature = "ffmpeg-input")]
 extern crate ffmpeg_next;
 
-mod whsiper_helper;
-mod model_config;
-
 
 #[cfg(feature = "ffmpeg-input")]
 use ffmpeg::{frame, media};
 #[cfg(feature = "ffmpeg-input")]
 use ffmpeg_next as ffmpeg;
-
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "wgpu-backend")] {
@@ -22,8 +18,7 @@ cfg_if::cfg_if! {
 #[cfg(feature = "bound-input")]
 use hound::{self, SampleFormat};
 
-/// 从音视频文件中提取音频数据
-/// 音频数据为16k Hz
+/// audio to 16k Hz
 /// //  cmd = [
 //         "ffmpeg",
 //         "-nostdin",
@@ -52,16 +47,24 @@ pub fn load_audio_waveform_with_ffmpeg(input_file: &str) -> Result<Vec<f32>, ffm
     //         *input.parameters().as_ptr()
     //     );
     // }
-    let context =
+    let mut context =
         ffmpeg::codec::context::Context::from_parameters(input_audio_stream.parameters())?;
     unsafe {
         //  Guessed Channel Layout: mono
-        let par = input_audio_stream.parameters().as_mut_ptr();
-        let x = (*par).ch_layout;
+        let xx = context.as_mut_ptr();
+        if (*xx).ch_layout.order == ffmpeg_next::ffi::AVChannelOrder::AV_CHANNEL_ORDER_UNSPEC {
+            // let mut NewLayout = std::mem::zeroed::<ffmpeg_next::ffi::AVChannelLayout>();
+            // ffmpeg_next::ffi::av_channel_layout_default(&mut NewLayout, (*xx).ch_layout.nb_channels);
+            // let res = ffmpeg_next::ffi::av_channel_layout_copy(&mut (*xx).ch_layout, &NewLayout);
+            // println!("res = {res}");
+            // std::mem::forget(NewLayout);
+        }
+        // let par = input_audio_stream.parameters().as_mut_ptr();
+        // let x = (*par).ch_layout;
 
         // (*par).get
         // ffmpeg::ffi::av_c
-        println!("channel = {:?} nb_channel {:?}", x.order, x.nb_channels);
+        // println!("channel = {:?} nb_channel {:?}", x.order, x.nb_channels);
 
         // if (*par).ch_layout. == 0 {
         //     (*par).ch_layout = ffmpeg::util::channel_layout::ChannelLayout::MONO.bits()
@@ -157,11 +160,12 @@ fn load_audio_waveform(filename: &str) -> hound::Result<(Vec<f32>, usize)> {
 use burn::prelude::Tensor;
 use whisper::audio::{log_mel_spectrogram, N_SAMPLES, pad_or_trim};
 use whisper::decoding::{DecodingOptions, UserSuppressTokens};
-use crate::whsiper_helper::{WhichModel, WhisperHelper};
+use whisper::whisper_helper::{WhichModel, WhisperHelper};
 
 #[tokio::main]
 async fn main() {
-    let wav_file = "./audio16k.wav";
+    let wav_file = "./tmp/s01e01_20.mp3";
+    // let wav_file = "./audio.wav";
 
     cfg_if::cfg_if! {
         if #[cfg(feature = "wgpu-backend")] {
@@ -202,54 +206,21 @@ async fn main() {
 
     println!("======== loading model.........");
     let start_time = std::time::Instant::now();
-    let helper: WhisperHelper<CurBackend> = WhisperHelper::new(WhichModel::Base, &device).await;
+    let helper: WhisperHelper<CurBackend> = WhisperHelper::new(WhichModel::Base, &device);
     let loading_time = start_time.elapsed();
-    println!(" cast {:?}", loading_time);
+    println!("loading model cast {:?}", loading_time);
     println!("======== detecting language...");
     // Pad 30-seconds of silence to the input audio, for slicing
     let audio = pad_or_trim(&audio, N_SAMPLES);
     let mel = log_mel_spectrogram(audio);
+    let now = std::time::Instant::now();
     let detect_result = helper.detect_language(&mel);
+    println!("detect language cost: {:?}", now.elapsed());
     println!("res = {detect_result:#?}");
     println!("========= begin run............");
+    let now = std::time::Instant::now();
     let res = helper.run(mel, decode_options);
-    println!("run res = {res:#?}");
-    return;
-    // let temperature = vec![];
-    // let compression_ratio_threshold = Some(2.4_f32);
-    // let logprob_threshold = Some(-1.0_f32);
-    // let no_speech_threshold = Some(0.6_f32);
-    // let clip_timestamps = vec![(0.0f32, 3.0f32)];
-    // let mut decode_options = whisper::decoding::DecodingOptions::default();
-    //
-    // let r = lib::transcribe(
-    //     &helper.model,
-    //     &helper.tokenizer,
-    //     lang,
-    //     waveform.clone(),
-    //     temperature,
-    //     compression_ratio_threshold,
-    //     logprob_threshold,
-    //     no_speech_threshold,
-    //     clip_timestamps,
-    //     &decode_options,
-    //     &device,
-    // );
-    // return;
-    // // let (text, _tokens) = match waveform_to_text(&whisper, &bpe, lang, waveform, 16000) {
-    // //     Ok((text, tokens)) => (text, tokens),
-    // //     Err(e) => {
-    // //         eprintln!("Error during transcription: {}", e);
-    // //         process::exit(1);
-    // //     }
-    // // };
-    //
-    // // fs::write(text_file, text).unwrap_or_else(|e| {
-    // //     eprintln!("Error writing transcription file: {}", e);
-    // //     process::exit(1);
-    // // });
-    //
-    // // println!("Transcription finished.");
+    println!("run res = {res:#?}, decoding cost: {:?}", now.elapsed());
 }
 
 

@@ -2,15 +2,14 @@
 name = "whisper"
 version = "0.1.0"
 edition = "2021"
-build = "build.rs"
+authors = ["dashuai009 dashuai009@gmail.com"]
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["wgpu-backend", "ffmpeg-input"]
+default = ["wgpu-backend"]
 torch-backend = ["burn-tch", "burn/tch"]
 wgpu-backend = ["burn-wgpu", "burn/wgpu"]
-ffmpeg-input = ["ffmpeg-next"]
-hound-input = ["hound"]
 
 [dependencies]
 burn-import = {  version = "0.13" }
@@ -20,22 +19,17 @@ burn-wgpu = {  version = "0.13", optional = true }
 
 serde = { version = "1", features = ["std", "derive"] }
 num-traits = "0.2"
-hound = { version = "3.5.1", optional = true }
-tokenizers = { version = "0.15.2", default-features = false, features = [
+tokenizers = { version = "0.19.1", default-features = false, features = [
     "onig",
     "http",
 ] }
-#npy = "0.4.0"
 cfg-if = "1"
-
-ffmpeg-next = { version = "7.0.0", features = [
-    "build",
-    "build-license-gpl", "build-license-nonfree", "build-license-version3"
-], optional = true }
-
-tokio = { version = "1", features = ["full"] }
 serde_json = "1.0.116"
 hf-hub = { version = "0.3.2" }
 
 [build-dependencies]
 pkg-config = "0.3"
+
+
+[workspace]
+members = ["whisper-transcribe"]
