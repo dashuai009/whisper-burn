@@ -6,7 +6,8 @@ use burn::config::ConfigError;
 use burn::prelude::{
     Backend, Bool, Int, Tensor,
 };
-use burn::record::Recorder;
+use burn::record::{Record, Recorder};
+use burn::tensor::activation::softmax;
 use hf_hub;
 use num_traits::ToPrimitive;
 
@@ -478,6 +479,8 @@ impl<B: Backend> WhisperHelper<B> {
         }
 
         let end_token = self.tokenizer.special_token(SpecialToken::EndofText).unwrap();
+        let sot_token = self.tokenizer.special_token(SpecialToken::StartofTranscript).unwrap();
+        let no_speech_token = self.tokenizer.special_token(SpecialToken::NoSpeech);
 
         let initial_tokens = initial_tokens.iter().map(|&x| x as i32).collect::<Vec<_>>();
         let mut tokens: Tensor<B, 2, Int> = Tensor::from_ints(&*initial_tokens, &device)
@@ -492,12 +495,15 @@ impl<B: Backend> WhisperHelper<B> {
 
 
         let mut sum_logprobs = Tensor::<B, 2>::zeros([n_batch, 1], &device);
-        let _no_speech_probs = Tensor::<B, 2>::full([n_batch, 1], f32::INFINITY, &device);
+        let mut no_speech_probs = Tensor::<B, 1>::full([n_batch], f32::INFINITY, &device);
         for i in 0..sample_len {
             let logits = self.model.forward_decoder(tokens.clone(), audio_features.clone());
-            if i == 0 && self.tokenizer.special_token(SpecialToken::NoSpeech).is_some() {
-                // save no_speech_probs
-                // no_speech_probs
+            if i == 0 && no_speech_token.is_some() {
+                let probs_at_sot =
+                    softmax(logits.clone().slice([0..n_batch, (sot_token as usize)..((sot_token as usize) + 1)]), 2);
+                no_speech_probs = probs_at_sot.slice(
+                    [0..n_batch, 0..1, (no_speech_token.unwrap() as usize)..((no_speech_token.unwrap() as usize) + 1)]
+                ).reshape([n_batch]);
             }
             let [n_audio, n_group, vol_size] = logits.dims();
             let mut logits = logits.slice([0..n_batch, (n_group - 1)..n_group]).reshape([n_audio, vol_size]);
@@ -577,11 +583,12 @@ impl<B: Backend> WhisperHelper<B> {
         let res = texts.into_iter()
             .zip(langs_tokens.into_iter())
             .zip(tokens.into_iter())
-            // .zip(audio_features)
+            .zip(audio_features.iter_dim(0))
             .zip(avg_logprobs.into_iter())
-            /*.zip(no_speech_probs)*/
-            .map(|(((text, language), tokens), /* features,*/ avg_logprob/*, no_speech_prob*/)| {
-                let audio_features = Tensor::<B, 2>::zeros([2, 3], &device);
+            .zip(no_speech_probs.iter_dim(0))
+            .map(|(((((text, language), tokens), features), avg_logprob), no_speech_prob)| {
+                let [_, group, length] = features.dims();
+                let audio_features = features.reshape([group, length]);
 
                 DecodingResult::new(
                     audio_features,
@@ -590,8 +597,8 @@ impl<B: Backend> WhisperHelper<B> {
                     tokens,
                     text,
                     avg_logprob,
-                    0.0,
-                    0.0,
+                    no_speech_prob.into_scalar().to_f32().unwrap(),
+                    self.decode_options.temperature,
                     0.0,
                 )
             }).collect::<Vec<_>>();
