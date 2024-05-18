@@ -191,14 +191,12 @@ pub struct WhisperHelper<B: Backend> {
     pub config: WhisperConfig,
     pub model: Whisper<B>,
     pub tokenizer: Rc<Gpt2Tokenizer>,
-    pub kind: WhichModel,
-    // decode
-    pub decode_options: DecodingOptions,
+    pub kind: WhichModel
 }
 
 impl<B: Backend> WhisperHelper<B> {
-    pub async fn new(model_kind: WhichModel, decode_options: DecodingOptions, device: &B::Device) -> WhisperHelper<B> {
-        let hf_api = hf_hub::api::sync::Api::new().unwrap();
+    pub async fn new(model_kind: WhichModel, device: &B::Device) -> WhisperHelper<B> {
+        let hf_api = hf_hub::api::sync::ApiBuilder::new().with_endpoint("https://hf-mirror.com".to_string()).build().unwrap();
         let (model_id, _) = model_kind.model_and_revision();
         let model_filename = hf_api
             .model(model_id.to_string())
@@ -279,8 +277,7 @@ impl<B: Backend> WhisperHelper<B> {
             config,
             model,
             tokenizer,
-            kind: model_kind,
-            decode_options,
+            kind: model_kind
         }
     }
 
@@ -360,9 +357,9 @@ impl<B: Backend> WhisperHelper<B> {
     }
 
 
-    fn init_decoder(&self) -> Box<dyn TokenDecoder<B>> {
+    fn init_decoder(&self, decoding_options: &DecodingOptions) -> Box<dyn TokenDecoder<B>> {
         let eot = self.tokenizer.special_token(SpecialToken::EndofText).unwrap();
-        let decoder: GreedyDecoder = GreedyDecoder::new(self.decode_options.temperature, eot as i32);
+        let decoder: GreedyDecoder = GreedyDecoder::new(decoding_options.temperature, eot as i32);
         return Box::new(decoder);
     }
 
@@ -385,9 +382,9 @@ impl<B: Backend> WhisperHelper<B> {
         return res;
     }
 
-    fn get_suppress_token(&self) -> Vec<u32> {
+    fn get_suppress_token(&self, decoding_options: &DecodingOptions) -> Vec<u32> {
         let mut suppress_token: Vec<u32> = vec![];
-        if let Some(user_suppress_token) = &self.decode_options.suppress_tokens {
+        if let Some(user_suppress_token) = &decoding_options.suppress_tokens {
             let user_tokens = match user_suppress_token {
                 UserSuppressTokens::Text(s) => {
                     s.split(',').map(|x| {
@@ -421,18 +418,18 @@ impl<B: Backend> WhisperHelper<B> {
     }
 
 
-    pub fn run(&self, mels: Tensor<B, 3>) -> Vec<DecodingResult<B>> {
+    pub fn run(&self, mels: Tensor<B, 3>, decoding_options: DecodingOptions) -> Vec<DecodingResult<B>> {
         // ====== decoder args ======
-        let n_group = self.decode_options.beam_size.unwrap_or(
-            self.decode_options.best_of.unwrap_or(1)
+        let n_group = decoding_options.beam_size.unwrap_or(
+            decoding_options.best_of.unwrap_or(1)
         );
 
         let [n_batch, n_mel, _n_ctx] = mels.dims();
         let n_ctx = self.model.decoder_ctx_size();
-        let sample_len = self.decode_options.sample_len.unwrap_or(n_ctx / 2);
+        let sample_len = decoding_options.sample_len.unwrap_or(n_ctx / 2);
         // let sot_sequence
 
-        let langs_tokens = if let Some(language) = &self.decode_options.language {
+        let langs_tokens = if let Some(language) = &decoding_options.language {
             let lang = Language::from_str(language).unwrap_or(Language::English);
             vec![lang; n_batch]
         } else {
@@ -448,15 +445,15 @@ impl<B: Backend> WhisperHelper<B> {
         // let inference
         let sequence_ranker = TakeFirstGroup::new();
         // todo: beam search
-        let decoder = self.init_decoder();
+        let decoder = self.init_decoder(&decoding_options);
 
         // logit filters: applies various rules to suppress or penalize certain tokens
         let mut logit_filters: Vec<Box<dyn LogitFilter<B>>> = vec![];
-        if self.decode_options.suppress_blank {
+        if decoding_options.suppress_blank {
             logit_filters.push(Box::new(SuppressBlank::new(self.tokenizer.clone(), sample_begin)));
         }
-        if self.decode_options.suppress_tokens.is_some() {
-            logit_filters.push(Box::new(whisper::decoding::logit_filter::SuppressTokens::new(self.get_suppress_token())));
+        if decoding_options.suppress_tokens.is_some() {
+            logit_filters.push(Box::new(whisper::decoding::logit_filter::SuppressTokens::new(self.get_suppress_token(&decoding_options))));
         }
 
 
@@ -603,6 +600,51 @@ impl<B: Backend> WhisperHelper<B> {
                 )
             }).collect::<Vec<_>>();
         return res;
+    }
+
+    fn decode_with_fallback(
+        &self,
+        segment: Tensor<B, 3>,
+        temperatures: &Vec<f32>,
+        decode_options: DecodingOptions
+    ) -> Vec<DecodingResult<B>> {
+        let mut decode_result = vec![];
+
+        for &t in temperatures.iter() {
+            let mut options = decode_options.clone(); // Assuming DecodingOptions is Clone
+            if t > 0.0 {
+                options.beam_size = None;
+                options.patience = None;
+            } else {
+                options.best_of = None;
+            }
+            options.temperature = t;
+            decode_result = self.run(segment.clone(), options);
+
+            let mut needs_fallback = false;
+            // if let Some(threshold) =  options.compression_ratio_threshold {
+            //     if decode_result.compression_ratio > threshold {
+            //         needs_fallback = true;
+            //     }
+            // }
+            // if let Some(threshold) = logprob_threshold {
+            //     if decode_result.avg_logprob < threshold {
+            //         needs_fallback = true;
+            //     }
+            // }
+            // if let Some(threshold) = no_speech_threshold {
+            //     if decode_result.no_speech_prob > threshold {
+            //         needs_fallback = false; // This looks like a potential bug in the original Python code, double-check logic
+            //     }
+            // }
+            if !needs_fallback {
+                return decode_result;
+            }
+        }
+
+        // Fallback or final decode result handling
+        // Assuming returning the last decode_result if all attempts fall back
+        decode_result
     }
 }
 

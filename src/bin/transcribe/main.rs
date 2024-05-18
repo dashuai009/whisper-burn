@@ -202,7 +202,7 @@ async fn main() {
 
     println!("======== loading model.........");
     let start_time = std::time::Instant::now();
-    let helper: WhisperHelper<CurBackend> = WhisperHelper::new(WhichModel::Base, decode_options, &device).await;
+    let helper: WhisperHelper<CurBackend> = WhisperHelper::new(WhichModel::Base, &device).await;
     let loading_time = start_time.elapsed();
     println!(" cast {:?}", loading_time);
     println!("======== detecting language...");
@@ -212,7 +212,7 @@ async fn main() {
     let detect_result = helper.detect_language(&mel);
     println!("res = {detect_result:#?}");
     println!("========= begin run............");
-    let res = helper.run(mel);
+    let res = helper.run(mel, decode_options);
     println!("run res = {res:#?}");
     return;
     // let temperature = vec![];
