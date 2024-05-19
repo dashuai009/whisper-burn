@@ -196,7 +196,7 @@ pub struct WhisperHelper<B: Backend> {
 
 impl<B: Backend> WhisperHelper<B> {
     pub fn new(model_kind: WhichModel, device: &B::Device) -> WhisperHelper<B> {
-        let hf_api = hf_hub::api::sync::ApiBuilder::new().with_endpoint("https://hf-mirror.com".to_string()).build().unwrap();
+        let hf_api = hf_hub::api::sync::ApiBuilder::new().build().unwrap();
         let (model_id, _) = model_kind.model_and_revision();
         let model_filename = hf_api
             .model(model_id.to_string())
