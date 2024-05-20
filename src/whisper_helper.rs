@@ -1,15 +1,15 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use burn::config::ConfigError;
 use burn::prelude::{
     Backend, Bool, Int, Tensor,
 };
-use burn::record::{Record, Recorder};
+use burn::record::Recorder;
 use burn::tensor::activation::softmax;
 use hf_hub;
 use num_traits::ToPrimitive;
+use serde::{Deserialize, Serialize};
 
 use crate::decoding::{
     DecodingOptions, GreedyDecoder, logit_filter::{LogitFilter, SuppressBlank}, sequence_ranker::{SequenceRanker, TakeFirstGroup},
@@ -23,11 +23,12 @@ use crate::model_config::MODEL_CONFIG;
 
 /// 模型种类。
 /// 目前一共11种模型+2种distil出品的加速推理的模型
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum WhichModel {
     Tiny,
     // #[value(name = "tiny.en")]
     TinyEn,
+    #[default]
     Base,
     // #[value(name = "base.en")]
     BaseEn,
@@ -66,38 +67,6 @@ impl WhichModel {
         }
     }
 
-    fn model_local_path(&self) -> PathBuf {
-        format!("{}/model.pt", self.as_str()).into()
-    }
-
-    fn config_path(&self) -> PathBuf {
-        format!("{}/{}.cfg", self.as_str(), self.as_str()).into()
-    }
-    fn tokenizer_json_path(&self) -> PathBuf {
-        format!("{}/tokenizer.json", self.as_str()).into()
-    }
-
-    fn as_str(&self) -> &'static str {
-        match self {
-            WhichModel::Tiny => "tiny",
-            WhichModel::TinyEn => "tiny_en",
-            WhichModel::Base => "base",
-            WhichModel::BaseEn => "base_en",
-            WhichModel::Small => "small",
-            WhichModel::SmallEn => "small_en",
-            WhichModel::Medium => "medium",
-            WhichModel::MediumEn => "medium_en",
-            WhichModel::LargeV1 => "large_v1",
-            WhichModel::LargeV2 => "large_v2",
-            WhichModel::LargeV3 => "large_v3",
-            WhichModel::DistilMediumEn => todo!(),
-            WhichModel::DistilLargeV2 => todo!(),
-        }
-    }
-
-    // fn is_downlaoded(&self) -> bool {
-    //     return false;
-    // }
 
     fn model_and_revision(&self) -> (&'static str, &'static str) {
         match self {
@@ -147,16 +116,16 @@ struct BeamSearchToken {
 
 #[derive(Debug)]
 pub struct DecodingResult<B: Backend> {
-    audio_features: Tensor<B, 2>,
-    language: Language,
-    language_probs: HashMap<String, f32>,
+    pub audio_features: Tensor<B, 2>,
+    pub language: Language,
+    pub language_probs: HashMap<String, f32>,
     //  Optional[Dict[str, float]] = None
-    tokens: Vec<u32>,
-    text: String,
-    avg_logprob: f32,
-    no_speech_prob: f32,
-    temperature: f32,
-    compression_ratio: f32,
+    pub tokens: Vec<u32>,
+    pub text: String,
+    pub avg_logprob: f32,
+    pub no_speech_prob: f32,
+    pub temperature: f32,
+    pub compression_ratio: f32,
 }
 
 impl<B: Backend> DecodingResult<B> {
@@ -602,7 +571,7 @@ impl<B: Backend> WhisperHelper<B> {
         return res;
     }
 
-    fn decode_with_fallback(
+    fn _decode_with_fallback(
         &self,
         segment: Tensor<B, 3>,
         temperatures: &Vec<f32>,
@@ -621,7 +590,7 @@ impl<B: Backend> WhisperHelper<B> {
             options.temperature = t;
             decode_result = self.run(segment.clone(), options);
 
-            let mut needs_fallback = false;
+            let needs_fallback = false;
             // if let Some(threshold) =  options.compression_ratio_threshold {
             //     if decode_result.compression_ratio > threshold {
             //         needs_fallback = true;

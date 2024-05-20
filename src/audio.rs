@@ -66,7 +66,7 @@ pub fn log_mel_spectrogram<B: Backend>(audio: Tensor<B, 2>) -> Tensor<B, 3> {
     return log_spec;
 }
 
-fn get_mel_filters<B: Backend>(
+fn _get_mel_filters<B: Backend>(
     sample_rate: f64,
     n_fft: usize,
     n_mels: usize,
