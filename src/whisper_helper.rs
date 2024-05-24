@@ -21,9 +21,8 @@ use crate::token::{Gpt2Tokenizer, Language, SpecialToken};
 
 use crate::model_config::MODEL_CONFIG;
 
-/// 模型种类。
-/// 目前一共11种模型+2种distil出品的加速推理的模型
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// the kind of model
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize, Hash)]
 pub enum WhichModel {
     Tiny,
     // #[value(name = "tiny.en")]
@@ -68,7 +67,7 @@ impl WhichModel {
     }
 
 
-    fn model_and_revision(&self) -> (&'static str, &'static str) {
+    pub fn model_and_revision(&self) -> (&'static str, &'static str) {
         match self {
             Self::Tiny => ("openai/whisper-tiny", "main"),
             Self::TinyEn => ("openai/whisper-tiny.en", "refs/pr/15"),
@@ -108,7 +107,7 @@ impl WhichModel {
 
 
 #[derive(Clone)]
-struct BeamSearchToken {
+struct _BeamSearchToken {
     _token: usize,
     _log_prob: f64,
 }
