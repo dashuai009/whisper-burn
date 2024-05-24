@@ -25,7 +25,7 @@ tokenizers = { version = "0.19.1", default-features = false, features = [
 ] }
 cfg-if = "1"
 serde_json = "1.0.116"
-hf-hub = { version = "0.3.2" }
+hf-hub = { version = "0.3.2", path = "./hf-hub" }
 
 [build-dependencies]
 pkg-config = "0.3"

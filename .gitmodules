@@ -1,0 +1,3 @@
+[submodule "hf-hub"]
+	path = hf-hub
+	url = https://github.com/huggingface/hf-hub.git
