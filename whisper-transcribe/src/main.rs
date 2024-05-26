@@ -7,6 +7,10 @@ use ffmpeg::{frame, media};
 #[cfg(feature = "ffmpeg-input")]
 use ffmpeg_next as ffmpeg;
 
+use cfg_if;
+
+
+
 cfg_if::cfg_if! {
     if #[cfg(feature = "wgpu-backend")] {
         use burn_wgpu::{Wgpu, WgpuDevice, AutoGraphicsApi};
@@ -14,9 +18,6 @@ cfg_if::cfg_if! {
         use burn_tch::{LibTorch, LibTorchDevice};
     }
 }
-
-#[cfg(feature = "bound-input")]
-use hound::{self, SampleFormat};
 
 /// audio to 16k Hz
 /// //  cmd = [
@@ -31,7 +32,7 @@ use hound::{self, SampleFormat};
 //         "-"
 //     ]
 #[cfg(feature = "ffmpeg-input")]
-pub fn load_audio_waveform_with_ffmpeg(input_file: &str) -> Result<Vec<f32>, ffmpeg::Error> {
+pub fn load_audio_waveform(input_file: &str) -> Result<Vec<f32>, ffmpeg::Error> {
     ffmpeg::init()?;
 
     let mut ictx = ffmpeg::format::input(&input_file)?;
@@ -129,7 +130,7 @@ pub fn load_audio_waveform_with_ffmpeg(input_file: &str) -> Result<Vec<f32>, ffm
     Ok(res)
 }
 
-#[cfg(feature = "hound-input")]
+#[cfg(not(feature = "ffmpeg-input"))]
 fn load_audio_waveform(filename: &str) -> hound::Result<(Vec<f32>, usize)> {
     let reader = hound::WavReader::open(filename)?;
     let spec = reader.spec();
@@ -157,70 +158,57 @@ fn load_audio_waveform(filename: &str) -> hound::Result<(Vec<f32>, usize)> {
 }
 
 
-use burn::prelude::Tensor;
-use whisper::audio::{log_mel_spectrogram, N_SAMPLES, pad_or_trim};
 use whisper::decoding::{DecodingOptions, UserSuppressTokens};
 use whisper::whisper_helper::{WhichModel, WhisperHelper};
 
-#[tokio::main]
-async fn main() {
-    let wav_file = "./tmp/s01e01_20.mp3";
+#[cfg(feature = "wgpu-backend")]
+fn init_model() -> (WhisperHelper<Wgpu<AutoGraphicsApi, f32, i32>>, WgpuDevice) {
+    let device = WgpuDevice::BestAvailable;
+    let helper = WhisperHelper::new(WhichModel::Tiny, &device);
+    return (helper, device);
+}
+
+#[cfg(not(feature = "wgpu-backend"))]
+fn init_model() -> (WhisperHelper<LibTorch<f32>>, LibTorchDevice) {
+    let device = LibTorchDevice::Cuda(0);
+    let helper: WhisperHelper<CurBackend> = WhisperHelper::new(WhichModel::Medium, &device);
+    return (helper, device);
+}
+
+fn main() {
+    let fake_endpoint = "https://hf-mirror.com".to_string();
+    std::env::set_var("HF_ENDPOINT", &fake_endpoint);
+    let wav_files = [
+        // "./tmp/20.mp4",
+        "./tmp/40.mp4",
+        // "./tmp/70.mp4",
+        // "./tmp/300.mp4",
+        // "./tmp/600.mp4"
+    ];
     // let wav_file = "./audio.wav";
-
-    cfg_if::cfg_if! {
-        if #[cfg(feature = "wgpu-backend")] {
-            type CurBackend = Wgpu<AutoGraphicsApi, f32, i32>;
-            let device = WgpuDevice::BestAvailable;
-        } else if #[cfg(feature = "torch-backend")] {
-            type CurBackend = LibTorch<f32>;
-            let device = LibTorchDevice::Cuda(0);
-        }
-    }
-    println!("Loading waveform...");
-
-    cfg_if::cfg_if! {
-        if #[cfg(feature = "hound-input")] {
-            let (waveform, _) = load_audio_waveform(wav_file).expect("");
-        } else if #[cfg(feature = "ffmpeg-input")] {
-            let waveform = load_audio_waveform_with_ffmpeg(wav_file).unwrap();
-        }
-    }
-    println!("wave len = {}", waveform.len());
-    // return;
-
-    // let temperature = vec![];
-    let _compression_ratio_threshold = Some(2.4_f32);
-    let _logprob_threshold = Some(-1.0_f32);
-    let _no_speech_threshold = Some(0.6_f32);
-    let _clip_timestamps = vec![(0.0f32, 3.0f32)];
-
-    let input_len = waveform.len();
-    let audio = Tensor::<CurBackend, 2>::from_floats(
-        burn::tensor::Data::new(waveform, [1, input_len].into()),
-        &device,
-    )
-        .to_device(&device);
-
-    let mut decode_options = DecodingOptions::default();
-    decode_options.suppress_tokens = Some(UserSuppressTokens::Text("-1".to_string()));
 
     println!("======== loading model.........");
     let start_time = std::time::Instant::now();
-    let helper: WhisperHelper<CurBackend> = WhisperHelper::new(WhichModel::Base, &device);
+    let (helper, device) = init_model();
     let loading_time = start_time.elapsed();
     println!("loading model cast {:?}", loading_time);
-    println!("======== detecting language...");
-    // Pad 30-seconds of silence to the input audio, for slicing
-    let audio = pad_or_trim(&audio, N_SAMPLES);
-    let mel = log_mel_spectrogram(audio);
-    let now = std::time::Instant::now();
-    let detect_result = helper.detect_language(&mel);
-    println!("detect language cost: {:?}", now.elapsed());
-    println!("res = {detect_result:#?}");
-    println!("========= begin run............");
-    let now = std::time::Instant::now();
-    let res = helper.run(mel, decode_options);
-    println!("run res = {res:#?}, decoding cost: {:?}", now.elapsed());
+
+    println!("Loading waveform...");
+    for file in wav_files {
+        let waveform = load_audio_waveform(file).expect("");
+        println!("wave len = {}", waveform.len());
+
+        let mut decode_options = DecodingOptions::default();
+        decode_options.suppress_tokens = Some(UserSuppressTokens::Text("-1".to_string()));
+
+        println!("========= begin run............");
+        let now = std::time::Instant::now();
+        let mut res= helper.run(&waveform, 8, decode_options, &device);
+        for i in &mut res{
+            i.tokens= vec![];
+        }
+        println!("run res = {res:#?}\ndecoding cost: {:?}", now.elapsed());
+    }
 }
 
 

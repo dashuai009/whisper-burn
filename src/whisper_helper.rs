@@ -2,14 +2,13 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use burn::config::ConfigError;
-use burn::prelude::{
-    Backend, Bool, Int, Tensor,
-};
+use burn::prelude::{Backend, Bool, Device, Int, Tensor};
 use burn::record::Recorder;
 use burn::tensor::activation::softmax;
 use hf_hub;
 use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
+use crate::audio::{log_mel_spectrogram, N_SAMPLES};
 
 use crate::decoding::{
     DecodingOptions, GreedyDecoder, logit_filter::{LogitFilter, SuppressBlank}, sequence_ranker::{SequenceRanker, TakeFirstGroup},
@@ -159,7 +158,7 @@ pub struct WhisperHelper<B: Backend> {
     pub config: WhisperConfig,
     pub model: Whisper<B>,
     pub tokenizer: Rc<Gpt2Tokenizer>,
-    pub kind: WhichModel
+    pub kind: WhichModel,
 }
 
 impl<B: Backend> WhisperHelper<B> {
@@ -245,7 +244,7 @@ impl<B: Backend> WhisperHelper<B> {
             config,
             model,
             tokenizer,
-            kind: model_kind
+            kind: model_kind,
         }
     }
 
@@ -255,11 +254,10 @@ impl<B: Backend> WhisperHelper<B> {
     /// of the most probable language tokens and the probability distribution over all language tokens.
     /// This is performed outside the main decode loop in order to not interfere with kv-caching.
     pub fn detect_language(&self, mel: &Tensor<B, 3>) -> (Vec<Language>, Vec<f32>) {
-        if !self.kind.is_multilingual() {
-            return (vec![Language::English], vec![1.0f32]);
-        }
-        // let mel = whisper::audio::pad_or_trim(mel, whisper::audio::N_FRAMES);
         let [n_audio, _, _seq_len] = mel.dims();
+        if !self.kind.is_multilingual() {
+            return (vec![Language::English; n_audio], vec![1.0f32; n_audio]);
+        }
 
         // mel = model.encoder(mel)
         let mel = self.model.forward_encoder(mel.clone());
@@ -386,7 +384,7 @@ impl<B: Backend> WhisperHelper<B> {
     }
 
 
-    pub fn run(&self, mels: Tensor<B, 3>, decoding_options: DecodingOptions) -> Vec<DecodingResult<B>> {
+    pub fn run_mels(&self, mels: Tensor<B, 3>, decoding_options: DecodingOptions) -> Vec<DecodingResult<B>> {
         // ====== decoder args ======
         let n_group = decoding_options.beam_size.unwrap_or(
             decoding_options.best_of.unwrap_or(1)
@@ -509,9 +507,10 @@ impl<B: Backend> WhisperHelper<B> {
                 for r0 in sample_begin..seq_len {
                     if tokens_data[batch_idx * (n_group * seq_len) + group_idx * seq_len + r0] == end_token {
                         r = r0;
+                        break;
                     }
                 }
-                group_tokens.push((tokens_data[batch_idx * (n_group * seq_len) + group_idx * seq_len + sample_begin..r]).to_vec());
+                group_tokens.push(tokens_data[(batch_idx * (n_group * seq_len) + group_idx * seq_len + sample_begin)..(batch_idx * (n_group * seq_len) + group_idx * seq_len + r)].to_vec());
             }
             tokens.push(group_tokens);
         }
@@ -570,11 +569,40 @@ impl<B: Backend> WhisperHelper<B> {
         return res;
     }
 
+    pub fn run(&self, raw_wave: &[f32], mut batch_size: usize, decoding_options: DecodingOptions, device: &Device<B>) -> Vec<DecodingResult<B>> {
+        if batch_size == 0 {
+            batch_size = 4;
+        }
+        let res = raw_wave.chunks(batch_size * N_SAMPLES).map(|data| {
+            let audio = if data.len() == batch_size * N_SAMPLES {
+                Tensor::<B, 2>::from_floats(
+                    burn::tensor::Data::new(Vec::from(data), [batch_size, N_SAMPLES].into()),
+                    device,
+                )
+            } else {
+                let mut data = Vec::from(data);
+                let pad_size = if data.len() % N_SAMPLES == 0 { 0 } else { N_SAMPLES - data.len() % N_SAMPLES };
+                for _i in 0..pad_size {
+                    data.push(0.0f32);
+                }
+                let data_len = data.len();
+                Tensor::<B, 2>::from_floats(
+                    burn::tensor::Data::new(data, [data_len / N_SAMPLES, N_SAMPLES].into()),
+                    device,
+                )
+            };
+            // we dont need pad because we have done.
+            // let audio = pad_or_trim(&audio, N_SAMPLES);
+            let mel = log_mel_spectrogram(audio);
+            self.run_mels(mel, decoding_options.clone())
+        }).flatten().collect();
+        res
+    }
     fn _decode_with_fallback(
         &self,
         segment: Tensor<B, 3>,
         temperatures: &Vec<f32>,
-        decode_options: DecodingOptions
+        decode_options: DecodingOptions,
     ) -> Vec<DecodingResult<B>> {
         let mut decode_result = vec![];
 
@@ -587,7 +615,7 @@ impl<B: Backend> WhisperHelper<B> {
                 options.best_of = None;
             }
             options.temperature = t;
-            decode_result = self.run(segment.clone(), options);
+            decode_result = self.run_mels(segment.clone(), options);
 
             let needs_fallback = false;
             // if let Some(threshold) =  options.compression_ratio_threshold {

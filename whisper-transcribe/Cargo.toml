@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["wgpu-backend"]
+default = ["wgpu-backend", "ffmpeg-input"]
 torch-backend = ["burn-tch", "burn/tch"]
 wgpu-backend = ["burn-wgpu", "burn/wgpu"]
 ffmpeg-input = ["ffmpeg-next"]
@@ -19,11 +19,16 @@ burn = {  version = "0.13", optional = true}
 burn-tch = { version = "0.13", optional = true }
 burn-wgpu = {  version = "0.13", optional = true }
 whisper = {version = "0.1.0", path = "../"}
+hound = { version = "3.5.1", optional = true }
+tokio = { version = "1", features = ["full"] }
+cfg-if = "1"
+[target.'cfg(windows)'.dependencies]
+ffmpeg-next = { version = "7.0.1" }
+
+[target.'cfg(not(windows))'.dependencies]
 ffmpeg-next = { version = "7.0.1", default-features = false, features = [
     "format", "software-resampling",
     "build",
     "build-license-gpl", "build-license-nonfree", "build-license-version3"
 ], optional = true }
-hound = { version = "3.5.1", optional = true }
-tokio = { version = "1", features = ["full"] }
-cfg-if = "1"
+
