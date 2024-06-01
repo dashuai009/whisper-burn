@@ -9,6 +9,10 @@ use ffmpeg_next as ffmpeg;
 
 use cfg_if;
 
+use whisper::decoding::DecodingOptions;
+use whisper::whisper_helper::{WhichModel, WhisperHelper};
+
+
 
 
 cfg_if::cfg_if! {
@@ -157,10 +161,6 @@ fn load_audio_waveform(filename: &str) -> hound::Result<(Vec<f32>, usize)> {
     return Ok((floats, sample_rate));
 }
 
-
-use whisper::decoding::{DecodingOptions, UserSuppressTokens};
-use whisper::whisper_helper::{WhichModel, WhisperHelper};
-
 #[cfg(feature = "wgpu-backend")]
 fn init_model() -> (WhisperHelper<Wgpu<AutoGraphicsApi, f32, i32>>, WgpuDevice) {
     let device = WgpuDevice::BestAvailable;
@@ -198,8 +198,7 @@ fn main() {
         let waveform = load_audio_waveform(file).expect("");
         println!("wave len = {}", waveform.len());
 
-        let mut decode_options = DecodingOptions::default();
-        decode_options.suppress_tokens = Some(UserSuppressTokens::Text("-1".to_string()));
+        let decode_options = DecodingOptions::default();
 
         println!("========= begin run............");
         let now = std::time::Instant::now();

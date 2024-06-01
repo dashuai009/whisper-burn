@@ -4,10 +4,9 @@ use burn::{
     nn::{
         self,
         conv::{Conv1d, Conv1dConfig},
-        PaddingConfig1d,
-        Embedding, EmbeddingConfig, Linear
+        Embedding, EmbeddingConfig, Linear, PaddingConfig1d,
     },
-    tensor::{ activation::softmax, backend::Backend, Int, Tensor},
+    tensor::{activation::softmax, backend::Backend, Int, Tensor},
 };
 
 #[derive(Config, Debug)]
@@ -24,8 +23,7 @@ impl WhisperConfig {
         assert_eq!(
             n_audio_state, n_text_state,
             "Audio encoder state size {} must be equal to text decoder state size {}.",
-            n_audio_state,
-            n_text_state
+            n_audio_state, n_text_state
         );
 
         let encoder = self.audio_encoder_config.init(device);
@@ -81,14 +79,13 @@ impl TextDecoderConfig {
         let token_embedding = EmbeddingConfig::new(self.n_vocab, self.n_text_state).init(device);
         let positional_embedding = Param::initialized(
             ParamId::new(),
-            Tensor::<B, 2>::empty(
-                [self.n_text_ctx, self.n_text_state], device,
-            ),
+            Tensor::<B, 2>::empty([self.n_text_ctx, self.n_text_state], device),
         );
         let blocks: Vec<_> = (0..self.n_text_layer)
             .into_iter()
             .map(|_| {
-                ResidualDecoderAttentionBlockConfig::new(self.n_text_state, self.n_text_head).init(device)
+                ResidualDecoderAttentionBlockConfig::new(self.n_text_state, self.n_text_head)
+                    .init(device)
             })
             .collect();
         let ln = nn::LayerNormConfig::new(self.n_text_state).init(device);
@@ -97,7 +94,9 @@ impl TextDecoderConfig {
             [self.n_text_ctx, self.n_text_ctx],
             f32::NEG_INFINITY,
             device,
-        ).triu(1).into();
+        )
+        .triu(1)
+        .into();
 
         let n_vocab = self.n_vocab;
         let n_text_ctx = self.n_text_ctx;
@@ -138,11 +137,10 @@ impl<B: Backend> TextDecoder<B> {
 
         let x = self.token_embedding.forward(x)
             + self
-            .positional_embedding
-            .val()
-            .slice([0..seq_len])
-            .unsqueeze::<3>();
-
+                .positional_embedding
+                .val()
+                .slice([0..seq_len])
+                .unsqueeze::<3>();
 
         let mut x = x;
         for block in &self.blocks {
@@ -150,7 +148,13 @@ impl<B: Backend> TextDecoder<B> {
         }
 
         let x = self.ln.forward(x);
-        return x.matmul(self.token_embedding.weight.val().transpose().unsqueeze::<3>());
+        return x.matmul(
+            self.token_embedding
+                .weight
+                .val()
+                .transpose()
+                .unsqueeze::<3>(),
+        );
     }
 
     fn ctx_size(&self) -> usize {
@@ -172,12 +176,14 @@ fn sinusoids<B: Backend>(length: usize, channels: usize, device: &B::Device) -> 
     let max_timescale = 10000.0;
     let log_timescale_increment = f32::ln(max_timescale) / ((channels / 2 - 1) as f32);
     let inv_timescales = Tensor::exp(
-        Tensor::arange(0..((channels / 2) as i64), device).float()
-            .mul_scalar(-log_timescale_increment)
+        Tensor::arange(0..((channels / 2) as i64), device)
+            .float()
+            .mul_scalar(-log_timescale_increment),
     );
-    let scaled_time =
-        Tensor::arange(0..(length as i64), device).reshape([length, 1]).float()
-            .matmul(inv_timescales.reshape([1, channels / 2]));
+    let scaled_time = Tensor::arange(0..(length as i64), device)
+        .reshape([length, 1])
+        .float()
+        .matmul(inv_timescales.reshape([1, channels / 2]));
     return Tensor::cat(vec![scaled_time.clone().sin(), scaled_time.cos()], 1);
 }
 
@@ -239,7 +245,11 @@ impl<B: Backend> AudioEncoder<B> {
     fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
         let [_, n_mels, _n_ctx] = x.dims();
 
-        assert_eq!(n_mels, self.n_mels, "Audio mel spectrum size must be {}.", self.n_mels);
+        assert_eq!(
+            n_mels, self.n_mels,
+            "Audio mel spectrum size must be {}.",
+            self.n_mels
+        );
         // assert!(
         //     n_ctx <= self.n_audio_ctx,
         //     "Audio length {} cannot exceed {}.",
@@ -308,11 +318,7 @@ pub struct ResidualEncoderAttentionBlock<B: Backend> {
 
 impl<B: Backend> ResidualEncoderAttentionBlock<B> {
     fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
-        let batch = x.dims()[0];
-        let x = x.clone() +
-            self.attn.forward(self.attn_ln.forward(x), None)
-                .slice([0..1])
-                .repeat(0, batch);
+        let x = x.clone() + self.attn.forward(self.attn_ln.forward(x), None);
 
         let z = self.mlp_ln.forward(x.clone());
 
@@ -369,15 +375,8 @@ pub struct ResidualDecoderAttentionBlock<B: Backend> {
 
 impl<B: Backend> ResidualDecoderAttentionBlock<B> {
     fn forward(&self, x: Tensor<B, 3>, xa: Tensor<B, 3>, mask: &Tensor<B, 2>) -> Tensor<B, 3> {
-        let batch = x.dims()[0];
-        let x = x.clone()
-            + self.attn.forward(self.attn_ln.forward(x), Some(mask))
-            .slice([0..1])
-            .repeat(0, batch);
-        let x = x.clone()
-            + self.cross_attn.forward(self.cross_attn_ln.forward(x), xa)
-            .slice([0..1])
-            .repeat(0, batch);
+        let x = x.clone() + self.attn.forward(self.attn_ln.forward(x), Some(mask));
+        let x = x.clone() + self.cross_attn.forward(self.cross_attn_ln.forward(x), xa);
 
         let z = self.mlp_ln.forward(x.clone());
 
@@ -539,7 +538,6 @@ pub fn qkv_attention<B: Backend>(
     return o;
 }
 
-
 #[cfg(test)]
 mod test {
     use burn::prelude::Tensor;
@@ -555,11 +553,7 @@ mod test {
                 let device = LibTorchDevice::Cuda(0);
             }
         }
-        let mask = Tensor::<CurBackend, 2>::full(
-            [10, 8],
-            f32::NEG_INFINITY,
-            &device,
-        ).triu(1);
+        let mask = Tensor::<CurBackend, 2>::full([10, 8], f32::NEG_INFINITY, &device).triu(1);
         println!("{mask}");
     }
 }
